@@ -7,7 +7,7 @@ import {
     Search, FileText, CheckCircle2, Clock, XCircle, ShieldCheck, Eye, Trash2,
     Calendar, Tag, Download, RefreshCcw, LayoutGrid, List as ListIcon, Loader2,
     Fingerprint, ShieldAlert, MoreVertical, ExternalLink, Award, CheckSquare,
-    Square, Trash, Ban, DownloadCloud
+    Square, Trash, Ban, DownloadCloud, Lock, FileSpreadsheet
 } from "lucide-react"
 import { useRouter } from "next/navigation"
 import axios from "axios"
@@ -17,8 +17,9 @@ import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Modal } from "@/components/ui/modal"
+import { API_BASE_URL } from "@/lib/api-config"
 
-const API = "http://localhost:8000"
+const API = API_BASE_URL
 
 interface Certificate {
     id: string
@@ -29,7 +30,13 @@ interface Certificate {
     revoked: boolean
     signing_status: string // "signed" | "unsigned"
     organization: string
+    claim_pin?: string
 }
+
+const ALL_TYPES = [
+    "degree", "birth_certificate", "trade", "business", "education",
+    "diploma", "training", "professional", "achievement", "attendance", "certificate"
+]
 
 export default function CertificatesPage() {
     const { user } = useAuth()
@@ -102,8 +109,15 @@ export default function CertificatesPage() {
                     fetchCerts()
                     closeModal()
                 } catch (err) {
-                    alert("Failed to revoke certificate")
-                    setModalConfig(p => ({ ...p, isLoading: false }))
+                    setModalConfig({
+                        isOpen: true,
+                        title: "Revoke Failed",
+                        description: "Failed to revoke the certificate. Please try again.",
+                        type: "danger",
+                        actionLabel: "Close",
+                        isLoading: false,
+                        onAction: closeModal
+                    })
                 }
             }
         })
@@ -124,8 +138,15 @@ export default function CertificatesPage() {
                     fetchCerts()
                     closeModal()
                 } catch (err) {
-                    alert("Failed to delete certificate")
-                    setModalConfig(p => ({ ...p, isLoading: false }))
+                    setModalConfig({
+                        isOpen: true,
+                        title: "Delete Failed",
+                        description: "Failed to delete the certificate record. Please try again.",
+                        type: "danger",
+                        actionLabel: "Close",
+                        isLoading: false,
+                        onAction: closeModal
+                    })
                 }
             }
         })
@@ -166,8 +187,15 @@ export default function CertificatesPage() {
                     fetchCerts()
                     closeModal()
                 } catch (err) {
-                    alert("Bulk revoke failed")
-                    setModalConfig(p => ({ ...p, isLoading: false }))
+                    setModalConfig({
+                        isOpen: true,
+                        title: "Bulk Revoke Failed",
+                        description: "One or more certificates could not be revoked. Please try again.",
+                        type: "danger",
+                        actionLabel: "Close",
+                        isLoading: false,
+                        onAction: closeModal
+                    })
                 }
             }
         })
@@ -191,8 +219,15 @@ export default function CertificatesPage() {
                     fetchCerts()
                     closeModal()
                 } catch (err) {
-                    alert("Bulk delete failed")
-                    setModalConfig(p => ({ ...p, isLoading: false }))
+                    setModalConfig({
+                        isOpen: true,
+                        title: "Bulk Delete Failed",
+                        description: "One or more records could not be deleted. Please try again.",
+                        type: "danger",
+                        actionLabel: "Close",
+                        isLoading: false,
+                        onAction: closeModal
+                    })
                 }
             }
         })
@@ -203,8 +238,10 @@ export default function CertificatesPage() {
     }
 
     const categories = useMemo(() => {
-        const cats = Array.from(new Set(certs.map(c => c.cert_type || "certificate")))
-        return ["all", ...cats]
+        const existingCats = Array.from(new Set(certs.map(c => c.cert_type || "certificate")))
+        // Combine predefined types with any dynamic ones, ensuring "all" is first
+        const combined = Array.from(new Set(["all", ...ALL_TYPES, ...existingCats]))
+        return combined
     }, [certs])
 
     const filteredCerts = useMemo(() => {
@@ -381,120 +418,127 @@ export default function CertificatesPage() {
                                 initial={{ opacity: 0, y: 20 }}
                                 animate={{ opacity: 1, y: 0 }}
                                 key={cert.id}
-                                className={`group relative rounded-[2.5rem] border transition-all duration-500 overflow-hidden bg-white/40 backdrop-blur-xl hover:shadow-2xl hover:shadow-indigo-500/10 ${cert.revoked
+                                className={`group relative rounded-[2rem] border transition-all duration-500 overflow-hidden bg-white/60 backdrop-blur-xl hover:shadow-2xl hover:shadow-indigo-500/10 ${cert.revoked
                                     ? "border-rose-200 grayscale-[0.5]"
                                     : cert.signing_status === "signed"
-                                        ? "border-emerald-100 hover:border-emerald-500/40"
-                                        : "border-amber-100 hover:border-indigo-500/40"
+                                        ? "border-emerald-100 hover:border-emerald-500/30"
+                                        : "border-slate-100 hover:border-indigo-500/30"
                                     } ${selectedIds.has(cert.id) ? "ring-4 ring-indigo-500/30 border-indigo-500" : ""}`}
                             >
-                                <div className="absolute top-4 left-4 z-10">
+                                <div className="absolute top-3 left-3 z-10">
                                     <Checkbox
                                         checked={selectedIds.has(cert.id)}
                                         onCheckedChange={() => toggleSelect(cert.id)}
-                                        className="bg-white/80 backdrop-blur border-slate-200"
+                                        className="bg-white/90 backdrop-blur border-slate-200 data-[state=checked]:bg-indigo-600 data-[state=checked]:border-indigo-600"
                                     />
                                 </div>
 
-                                {/* Premium Card Background Accent */}
-                                <div className={`absolute top-0 left-0 w-full h-1.5 ${cert.revoked ? "bg-rose-500" : cert.signing_status === "signed" ? "bg-emerald-500" : "bg-indigo-500"}`}></div>
+                                <div className={`absolute top-0 left-0 w-full h-1 ${cert.revoked ? "bg-rose-500" : cert.signing_status === "signed" ? "bg-emerald-500" : "bg-indigo-500"}`}></div>
 
-                                <div className="p-8 pt-10">
-                                    <div className="flex justify-between items-start mb-6">
-                                        <div className={`p-4 rounded-3xl shadow-lg ring-1 ring-white/50 ${cert.revoked ? "bg-rose-50 text-rose-600" :
-                                            cert.signing_status === "signed" ? "bg-emerald-50 text-emerald-600" : "bg-indigo-50 text-indigo-600"
+                                <div className="p-5 flex flex-col h-full">
+                                    <div className="flex justify-between items-start mb-4">
+                                        <div className={`p-2.5 rounded-2xl shadow-sm ring-1 ring-white/50 ${cert.revoked ? "bg-rose-50 text-rose-500" :
+                                            cert.signing_status === "signed" ? "bg-emerald-50 text-emerald-500" : "bg-indigo-50 text-indigo-500"
                                             }`}>
-                                            <Fingerprint className="w-10 h-10" />
+                                            <Fingerprint className="w-6 h-6" />
                                         </div>
-                                        <div className="flex flex-col items-end gap-2.5">
-                                            <div className="flex gap-2">
+                                        <div className="flex flex-col items-end gap-1.5">
+                                            <div className="flex gap-1.5">
                                                 {cert.revoked ? (
-                                                    <Badge variant="destructive" className="rounded-full font-black uppercase text-[10px] px-3 py-1 shadow-sm border-2 border-white">
+                                                    <Badge variant="destructive" className="rounded-full font-black uppercase text-[9px] px-2 py-0.5 shadow-sm border border-white">
                                                         Revoked
                                                     </Badge>
                                                 ) : cert.signing_status === "signed" ? (
-                                                    <Badge className="bg-emerald-500 hover:bg-emerald-600 text-white rounded-full font-black uppercase text-[10px] px-3 py-1 shadow-sm border-2 border-white">
-                                                        Standard
+                                                    <Badge className="bg-emerald-500 hover:bg-emerald-600 text-white rounded-full font-black uppercase text-[9px] px-2 py-0.5 shadow-sm border border-white">
+                                                        Signed
                                                     </Badge>
                                                 ) : (
-                                                    <Badge variant="outline" className="bg-amber-500 text-white border-none rounded-full font-black uppercase text-[10px] px-3 py-1 shadow-sm border-2 border-white">
-                                                        Unsigned
+                                                    <Badge variant="outline" className="bg-amber-100 text-amber-700 border-amber-200 rounded-full font-black uppercase text-[9px] px-2 py-0.5 shadow-sm">
+                                                        Draft
                                                     </Badge>
                                                 )}
                                             </div>
-                                            <p className="text-[10px] text-slate-400 font-mono font-bold tracking-widest bg-slate-50 px-2 py-0.5 rounded-md border border-slate-100">#{cert.id.slice(0, 8).toUpperCase()}</p>
+                                            <p className="text-[9px] text-slate-400 font-mono font-bold tracking-widest bg-slate-50 px-1.5 py-0.5 rounded border border-slate-100">#{cert.id.slice(0, 8).toUpperCase()}</p>
                                         </div>
                                     </div>
 
-                                    <div className="space-y-6">
+                                    <div className="flex-1 space-y-4">
                                         <div>
-                                            <h3 className="text-2xl font-black text-slate-900 leading-tight group-hover:text-indigo-600 transition-colors line-clamp-2 min-h-[2.2em]">{cert.course_name}</h3>
-                                            <div className="flex flex-col gap-3 mt-6">
-                                                <div className="flex items-center gap-4">
-                                                    <div className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center text-xs font-black text-slate-600 border-2 border-white shadow-sm overflow-hidden">
-                                                        {cert.student_name[0]}
-                                                    </div>
-                                                    <div>
-                                                        <p className="text-sm font-black text-slate-700 capitalize line-clamp-1">{cert.student_name}</p>
-                                                        <p className="text-[12px] text-slate-400 font-bold uppercase tracking-widest">{cert.organization || "Academic Institute"}</p>
-                                                    </div>
-                                                </div>
-                                                <div className="flex items-center justify-between pt-2">
-                                                    <p className="text-[12px] text-slate-400 font-bold flex items-center gap-2">
-                                                        <Calendar className="w-4 h-4" />
-                                                        {new Date(cert.issued_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
-                                                    </p>
-                                                    <div className="px-3 py-1 rounded-xl bg-slate-100 text-[10px] font-black text-slate-500 uppercase tracking-widest border border-slate-200/50">
-                                                        {cert.cert_type || "Credential"}
-                                                    </div>
-                                                </div>
+                                            <span className="text-[9px] font-black text-indigo-500 uppercase tracking-[0.2em] block mb-1">{cert.cert_type?.replace(/_/g, " ") || "Certificate"}</span>
+                                            <h3 className="text-xl font-black text-slate-900 leading-tight group-hover:text-indigo-600 transition-colors line-clamp-2 min-h-[1.1em]">{cert.course_name}</h3>
+                                        </div>
+
+                                        <div className="flex items-center gap-3 py-3 border-y border-slate-50">
+                                            <div className="w-8 h-8 rounded-full bg-indigo-50 flex items-center justify-center text-[10px] font-black text-indigo-600 border border-white shadow-sm shrink-0">
+                                                {cert.student_name[0].toUpperCase()}
+                                            </div>
+                                            <div className="min-w-0">
+                                                <p className="text-[13px] font-black text-slate-700 capitalize truncate">{cert.student_name}</p>
+                                                <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider truncate">{cert.organization || "Academic Institute"}</p>
                                             </div>
                                         </div>
 
-                                        <div className="flex items-center gap-3 pt-6 border-t border-slate-100">
-                                            <div className="flex-1 flex gap-2">
-                                                {!cert.revoked && (
-                                                    <>
-                                                        {user?.is_admin && cert.signing_status === "unsigned" && (
-                                                            <Button
-                                                                size="sm"
-                                                                className="flex-1 bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-600 hover:to-orange-700 text-white shadow-lg shadow-orange-500/20 font-black rounded-2xl h-12 transition-all hover:scale-[1.02] active:scale-[0.98]"
-                                                                onClick={() => handleSignRedirect(cert.id)}
-                                                            >
-                                                                <ShieldCheck className="w-5 h-5 mr-2" />
-                                                                Sign Now
-                                                            </Button>
-                                                        )}
+                                        <div className="flex items-center justify-between">
+                                            <div className="flex items-center gap-1.5 text-slate-400">
+                                                <Calendar className="w-3.5 h-3.5" />
+                                                <span className="text-[11px] font-bold">{new Date(cert.issued_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}</span>
+                                            </div>
+                                            {(cert.claim_pin && cert.signing_status === 'signed') && (
+                                                <div className="flex items-center gap-1 px-2 py-0.5 bg-amber-50 border border-amber-100 rounded text-[9px] font-black text-amber-600 uppercase tracking-tighter" title="Wallet Claim PIN">
+                                                    <Lock className="w-2.5 h-2.5" />
+                                                    PIN: {cert.claim_pin}
+                                                </div>
+                                            )}
+                                        </div>
+                                    </div>
+
+                                    <div className="mt-4 pt-4 border-t border-slate-100 flex flex-col gap-2">
+                                        <div className="flex gap-2">
+                                            {!cert.revoked && (
+                                                <>
+                                                    {user?.is_admin && cert.signing_status === "unsigned" && (
                                                         <Button
                                                             size="sm"
-                                                            className={`flex-1 bg-slate-900 hover:bg-indigo-600 text-white shadow-lg shadow-slate-900/20 font-black rounded-2xl h-12 transition-all hover:scale-[1.02] active:scale-[0.98] ${cert.signing_status === "unsigned" ? "hidden" : ""}`}
-                                                            onClick={() => window.open(`${API}/api/download/${cert.id}`)}
+                                                            className="flex-1 bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-600 hover:to-orange-700 text-white shadow-md font-black rounded-xl h-10 text-[11px] transition-all hover:scale-[1.02]"
+                                                            onClick={() => handleSignRedirect(cert.id)}
                                                         >
-                                                            <Eye className="w-5 h-5 mr-2" />
-                                                            Preview
+                                                            <ShieldCheck className="w-4 h-4 mr-1.5" />
+                                                            Sign
                                                         </Button>
-                                                    </>
-                                                )}
-                                                {user?.is_admin && (
+                                                    )}
                                                     <Button
-                                                        variant="outline"
-                                                        size="icon"
-                                                        className="rounded-2xl border-slate-200 h-10 w-10 text-slate-400 hover:text-rose-600 hover:bg-rose-50 hover:border-rose-100 transition-all"
-                                                        onClick={() => handleDelete(cert.id)}
+                                                        size="sm"
+                                                        className="flex-1 bg-slate-900 hover:bg-slate-800 text-white font-black rounded-xl h-10 text-[11px] transition-all hover:scale-[1.02]"
+                                                        onClick={() => window.open(`${API}/api/download/${cert.id}`)}
+                                                        title={cert.signing_status === "unsigned" ? "Preview Draft PDF" : "Download Signed PDF"}
                                                     >
-                                                        <Trash2 className="w-5 h-5" />
+                                                        <div className="flex items-center gap-1.5">
+                                                            {cert.signing_status === "unsigned" ? <Eye className="w-4 h-4" /> : <Download className="w-4 h-4" />}
+                                                            {cert.signing_status === "unsigned" ? "Preview" : "Download"}
+                                                        </div>
                                                     </Button>
-                                                )}
-                                            </div>
-                                            <Button
-                                                variant="ghost"
-                                                size="sm"
-                                                className="h-12 px-4 text-indigo-600 hover:bg-indigo-50 font-black rounded-2xl"
-                                                onClick={() => window.location.href = `/verify?id=${cert.id}`}
-                                            >
-                                                Verify
-                                            </Button>
+                                                </>
+                                            )}
+                                            {user?.is_admin && (
+                                                <Button
+                                                    variant="outline"
+                                                    size="icon"
+                                                    className="rounded-xl border-slate-200 h-10 w-10 text-slate-400 hover:text-rose-600 hover:bg-rose-50 hover:border-rose-100 shrink-0"
+                                                    onClick={() => handleDelete(cert.id)}
+                                                >
+                                                    <Trash2 className="w-4 h-4" />
+                                                </Button>
+                                            )}
                                         </div>
+                                        <Button
+                                            variant="ghost"
+                                            size="sm"
+                                            className="w-full h-9 text-indigo-600 hover:bg-indigo-50 font-black rounded-xl text-[11px] flex items-center justify-center gap-1.5"
+                                            onClick={() => window.location.href = `/verify?id=${cert.id}`}
+                                        >
+                                            <ShieldCheck className="w-4 h-4" />
+                                            Verify Authenticity
+                                        </Button>
                                     </div>
                                 </div>
                             </motion.div>

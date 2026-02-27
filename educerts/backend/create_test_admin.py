@@ -31,4 +31,4 @@ def create_admin_user(name: str, email: str, password: str):
         db.close()
 
 if __name__ == "__main__":
-    create_admin_user("Eden", "edenzewdutadesse11@gmail.com", "ed1234")
+    create_admin_user("Admin", "admin@gmail.com", "admin123")

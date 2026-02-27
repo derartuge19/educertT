@@ -37,18 +37,11 @@ ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
 # CORS setup
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[FRONTEND_URL, "http://127.0.0.1:3000", "http://localhost:3000"],
+    allow_origins=[FRONTEND_URL, "http://127.0.0.1:3000", "http://localhost:3000", "http://localhost:3002", "http://127.0.0.1:3002", "http://10.5.87.118:3002", "https://hungry-animals-leave.loca.lt", "https://educerts-api.loca.lt", "https://routes-div-studies-tumor.trycloudflare.com", "https://fountain-benefit-walking-span.trycloudflare.com"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-@app.middleware("http")
-async def log_requests(request: Request, call_next):
-    print(f"DEBUG REQ: {request.method} {request.url.path}")
-    print(f"DEBUG REQ Cookies: {request.cookies}")
-    response = await call_next(request)
-    return response
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request, exc):
@@ -103,24 +96,17 @@ def get_current_user_from_cookie(
 ) -> Optional[models.User]:
     """Dependency to extract and validate the user from the HttpOnly cookie."""
     if not access_token:
-        print("DEBUG AUTH: No access_token cookie found.")
         return None
     
     payload = auth_utils.decode_access_token(access_token)
     if not payload:
-        print("DEBUG AUTH: Failed to decode access_token.")
         return None
         
     username = payload.get("sub")
     if not username:
-        print("DEBUG AUTH: No 'sub' in payload.")
         return None
         
     user = db.query(models.User).filter(models.User.name == username).first()
-    if not user:
-        print(f"DEBUG AUTH: User '{username}' not found in database.")
-        return None
-        
     return user
 
 def require_user(current_user: Optional[models.User] = Depends(get_current_user_from_cookie)) -> models.User:
@@ -280,7 +266,7 @@ def issue_certificate(cert_data: schemas.CertificateCreate, db: Session = Depend
     )
     db.add(doc_registry_entry)
 
-    claim_pin = "".join([str(random.randint(0, 9)) for _ in range(6)])
+    claim_pin = None
 
     # If a PDF template exists, render it immediately
     pdf_template_path = "user_templates/template.pdf"
@@ -293,9 +279,16 @@ def issue_certificate(cert_data: schemas.CertificateCreate, db: Session = Depend
         # Build field values from the data_payload + core fields
         field_values = {
             "student_name": cert_data.student_name,
+            "name": cert_data.student_name, # Alias
+            "recipient": cert_data.student_name, # Alias
             "course_name": cert_data.course_name,
+            "course": cert_data.course_name, # Alias
+            "subject": cert_data.course_name, # Alias
             "issued_at": issued_at_str,
+            "date": issued_at_str, # Alias
             "cert_id": cert_id,
+            "id": cert_id, # alias
+            "id8": cert_id[:8], # short alias
             "signature": sig[:20] + "...",
             "qr_code": qr_b64,
             **cert_data.data_payload
@@ -304,7 +297,12 @@ def issue_certificate(cert_data: schemas.CertificateCreate, db: Session = Depend
         os.makedirs("generated_certs", exist_ok=True)
         out_path = f"generated_certs/{cert_id}_base.pdf"
         try:
-            pdf_utils.render_pdf_certificate(pdf_template_path, field_values, out_path)
+            pdf_utils.render_pdf_certificate(
+                pdf_template_path, 
+                field_values, 
+                out_path,
+                metadata={"cert_id": cert_id}
+            )
             rendered_path = out_path
         except Exception as e:
             print(f"DEBUG: Single issuance PDF render failed: {e}")
@@ -320,7 +318,9 @@ def issue_certificate(cert_data: schemas.CertificateCreate, db: Session = Depend
         organization=organization,
         batch_id=batch_id,
         template_type="pdf" if os.path.exists(pdf_template_path) else "html",
-        rendered_pdf_path=rendered_path
+        rendered_pdf_path=rendered_path,
+        signing_status="unsigned",
+        claimed=False
     )
     db.add(db_cert)
     db.commit()
@@ -333,9 +333,12 @@ def issue_certificate(cert_data: schemas.CertificateCreate, db: Session = Depend
 # ─────────────────────────────────────────────────────────────────────────────
 
 @app.post("/api/claim")
-def claim_certificate(claim_data: dict, db: Session = Depends(get_db)):
+def claim_certificate(claim_data: dict, db: Session = Depends(get_db), current_user: models.User = Depends(require_user)):
     pin = claim_data.get("pin")
     org = claim_data.get("organization")
+
+    if not pin or len(pin) != 6:
+        raise HTTPException(status_code=400, detail="Invalid PIN format. Must be 6 digits.")
 
     cert = db.query(models.Certificate).filter(
         models.Certificate.claim_pin == pin,
@@ -348,8 +351,20 @@ def claim_certificate(claim_data: dict, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="This certificate has been revoked")
 
     cert.claimed = True
+    cert.student_id = current_user.id
     db.commit()
-    return cert.data_payload
+    db.refresh(cert)
+    
+    # Return the full cert so the frontend gets the true database ID
+    return {
+        "id": cert.id,
+        "student_name": cert.student_name,
+        "course_name": cert.course_name,
+        "cert_type": cert.cert_type,
+        "issued_at": cert.issued_at.isoformat() if cert.issued_at else None,
+        "organization": cert.organization,
+        "data_payload": cert.data_payload
+    }
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Verification (Phase 3: Check Document Registry)
@@ -361,7 +376,13 @@ def verify_certificate(request: schemas.VerificationRequest, db: Session = Depen
     cert = None
 
     if request.certificate_id:
+        # Try full UUID first
         cert = db.query(models.Certificate).filter(models.Certificate.id == request.certificate_id).first()
+        
+        # If not found, try short ID (prefix match)
+        if not cert and len(request.certificate_id) == 8:
+            cert = db.query(models.Certificate).filter(models.Certificate.id.like(f"{request.certificate_id}%")).first()
+            
         if not cert:
             raise HTTPException(status_code=404, detail="Certificate not found")
         oa_doc = cert.data_payload
@@ -443,15 +464,21 @@ def verify_certificate(request: schemas.VerificationRequest, db: Session = Depen
             },
             {
                 "type": "ISSUER_IDENTITY",
-                "name": "EduCertsRegistry",
-                "status": "VALID" if is_identity_valid else "INVALID",
-                "data": [{"name": issuer_name, "status": "VALID" if is_identity_valid else "INVALID"}]
+                "name": "DNS-TXT",
+                "data": {"name": issuer_name, "id": "educerts.io"},
+                "status": "VALID" if is_identity_valid else "INVALID"
             },
             {
-                "type": "DOCUMENT_REGISTRY",
-                "name": "MerkleRootAnchor",
-                "data": {"merkle_root": merkle_root, "anchored": is_registry_valid},
+                "type": "REGISTRY_CHECK",
+                "name": "DocumentRegistry",
+                "data": is_registry_valid,
                 "status": "VALID" if is_registry_valid else "INVALID"
+            },
+            {
+                "type": "SIGNATURE_CHECK",
+                "name": "CryptoSignature",
+                "data": is_signature_valid,
+                "status": "VALID" if is_signature_valid else "INVALID"
             }
         ],
         "certificate": {
@@ -459,6 +486,100 @@ def verify_certificate(request: schemas.VerificationRequest, db: Session = Depen
             "course_name": cert.course_name if cert else "Unknown"
         }
     }
+
+@app.post("/api/verify/pdf")
+async def verify_pdf_certificate(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    """
+    Extracts the certificate ID from a PDF file (via text extraction or regex)
+    and verifies it against the registry.
+    """
+    import fitz  # PyMuPDF
+    import re
+
+    content = await file.read()
+
+    # Validate it's actually a PDF
+    if not content.startswith(b"%PDF"):
+        raise HTTPException(status_code=400, detail="Uploaded file is not a valid PDF.")
+
+    try:
+        doc = fitz.open(stream=content, filetype="pdf")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Could not open PDF: {e}")
+
+    # NEW: Metadata-first extraction (highest reliability)
+    # We check 'subject' because 'cert_id' is non-standard and PyMuPDF might reject it
+    cert_id = doc.metadata.get("subject") or doc.metadata.get("cert_id")
+    if cert_id:
+        print(f"DEBUG verify/pdf: Found ID in metadata: {cert_id}")
+
+    # Extract all text across all pages
+    text = ""
+    for page in doc:
+        text += page.get_text()
+    doc.close()
+
+    print(f"DEBUG verify/pdf: Extracted text length={len(text)}, sample={text[:300]!r}")
+
+    # ONLY reset if we didn't find it in metadata
+    if not cert_id:
+        # Pattern 1: Full UUID (most reliable)
+        match = re.search(
+            r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})",
+            text, re.IGNORECASE
+        )
+        if match:
+            cert_id = match.group(1).lower()
+            print(f"DEBUG verify/pdf: Found full UUID: {cert_id}")
+
+    # Pattern 2: "#XXXXXXXX" (8-char hex with hash — matches how cards display it)
+    if not cert_id:
+        match = re.search(r"#([0-9A-F]{8})\b", text, re.IGNORECASE)
+        if match:
+            cert_id = match.group(1).lower()
+            print(f"DEBUG verify/pdf: Found short ID with #: {cert_id}")
+
+    # Pattern 3: "ID: XXXXXXXX" or "ID:XXXXXXXX" or "cert_id: XXXXXXXX"
+    if not cert_id:
+        match = re.search(r"(?:cert[_-]?id|certificate[_\s]id|ID)\s*[:\-]\s*([0-9A-F]{8,36})", text, re.IGNORECASE)
+        if match:
+            cert_id = match.group(1).strip().lower()
+            print(f"DEBUG verify/pdf: Found labeled ID: {cert_id}")
+
+    # Pattern 4: Any standalone 8-char hex block (last resort)
+    if not cert_id:
+        match = re.search(r"\b([0-9A-F]{8})\b", text, re.IGNORECASE)
+        if match:
+            cert_id = match.group(1).lower()
+            print(f"DEBUG verify/pdf: Found bare 8-char hex: {cert_id}")
+
+    if not cert_id:
+        # Pattern 5: Raw binary scan as absolute last resort
+        try:
+            raw_text = content.decode("utf-8", errors="ignore")
+            raw_match = re.search(r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})", raw_text, re.IGNORECASE)
+            if raw_match:
+                cert_id = raw_match.group(1).lower()
+                print(f"DEBUG verify/pdf: Found ID via RAW binary scan: {cert_id}")
+        except:
+            pass
+
+    if not cert_id:
+        # Check if the PDF is actually empty (potentially a scanned image)
+        if len(text.strip()) < 10:
+            raise HTTPException(
+                status_code=400, 
+                detail="This PDF appears to be an image or scanned document. EduCerts digital certificates must be verifiable PDFs with a text layer or QR code."
+            )
+        
+        raise HTTPException(
+            status_code=400,
+            detail="Could not find a valid Certificate ID in this PDF. Please ensure you are uploading the original digital certificate file."
+        )
+
+    # Reuse verification logic
+    request = schemas.VerificationRequest(certificate_id=cert_id)
+    return verify_certificate(request, db)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Certificate CRUD
@@ -468,9 +589,31 @@ def verify_certificate(request: schemas.VerificationRequest, db: Session = Depen
 def get_all_certificates(db: Session = Depends(get_db)):
     return db.query(models.Certificate).order_by(models.Certificate.issued_at.desc()).all()
 
+@app.get("/api/certificate/{cert_id}", response_model=schemas.Certificate)
+def get_certificate_by_id(cert_id: str, db: Session = Depends(get_db), current_user: models.User = Depends(require_user)):
+    """Returns a single certificate by its UUID. Used for deep-linking into the signing step."""
+    cert = db.query(models.Certificate).filter(models.Certificate.id == cert_id).first()
+    if not cert:
+        raise HTTPException(status_code=404, detail="Certificate not found")
+    return cert
+
 @app.get("/api/certificates/{student_name}", response_model=List[schemas.Certificate])
-def get_student_certificates(student_name: str, db: Session = Depends(get_db)):
-    return db.query(models.Certificate).filter(models.Certificate.student_name == student_name).all()
+def get_student_certificates(student_name: str, db: Session = Depends(get_db), current_user: models.User = Depends(require_user)):
+    """
+    Returns certificates for a student. Checks by name or by student_id.
+    """
+    # Try by student_id first for reliability
+    certs = db.query(models.Certificate).filter(
+        models.Certificate.student_id == current_user.id
+    ).all()
+    
+    if not certs:
+        # Fallback to name search
+        certs = db.query(models.Certificate).filter(
+            models.Certificate.student_name == student_name
+        ).all()
+        
+    return certs
 
 @app.post("/api/revoke/{cert_id}")
 def revoke_certificate(cert_id: str, db: Session = Depends(get_db), current_user: models.User = Depends(require_admin)):
@@ -825,16 +968,27 @@ async def bulk_issue_from_template(
             issued_at_str = datetime.datetime.now().strftime("%Y-%m-%d")
             field_values = {
                 "student_name": item["student_name"],
+                "name": item["student_name"], # Alias
+                "recipient": item["student_name"], # Alias
                 "course_name": item["course_name"],
+                "course": item["course_name"], # Alias
+                "subject": item["course_name"], # Alias
                 "issued_at": issued_at_str,
+                "date": issued_at_str, # Alias
                 "cert_id": item["cert_id"],
+                "id": item["cert_id"],
+                "id8": item["cert_id"][:8],
                 "signature": batch_sig[:20] + "...",
                 **item["data_payload_fields"]
             }
             out_path = f"generated_certs/{item['cert_id']}_base.pdf"
             try:
                 pdf_utils.render_pdf_certificate(
-                    template_path, field_values, out_path, placeholder_map=placeholder_map
+                    template_path, 
+                    field_values, 
+                    out_path, 
+                    placeholder_map=placeholder_map,
+                    metadata={"cert_id": item["cert_id"]}
                 )
                 rendered_path = out_path
             except Exception as e:
@@ -969,15 +1123,21 @@ async def bulk_issue_from_excel(
             # 2. Try normalized match
             f_norm = normalize_column_name(field)
             if f_norm in row_keys_normalized:
-                val = row[row_keys_normalized[f_norm]]
+                col_name = row_keys_normalized[f_norm]
+                val = row[col_name]
                 data_payload_fields[field] = str(val).strip() if val is not None else ""
+                print(f"  - Mapped '{field}' (norm: '{f_norm}') from column '{col_name}'")
                 continue
             
             # 3. Handle common aliases explicitly
             if f_norm == "student_name" and name_col:
                 data_payload_fields[field] = str(row[name_col]).strip() if row[name_col] is not None else ""
+                print(f"  - Mapped '{field}' from name_col '{name_col}'")
             elif f_norm == "course_name" and course_col:
                 data_payload_fields[field] = str(row[course_col]).strip() if row[course_col] is not None else ""
+                print(f"  - Mapped '{field}' from course_col '{course_col}'")
+            else:
+                print(f"  - WARNING: Field '{field}' NOT mapped")
 
         curr_cert_type = row.get("cert_type", cert_type).strip() or cert_type
         curr_organization = row.get("organization", organization).strip() or organization
@@ -1042,9 +1202,16 @@ async def bulk_issue_from_excel(
             issued_at_str = datetime.datetime.now().strftime("%Y-%m-%d")
             field_values = {
                 "student_name": item["student_name"],
+                "name": item["student_name"], # Alias
+                "recipient": item["student_name"], # Alias
                 "course_name": item["course_name"],
+                "course": item["course_name"], # Alias
+                "subject": item["course_name"], # Alias
                 "issued_at": issued_at_str,
+                "date": issued_at_str, # Alias
                 "cert_id": item["cert_id"],
+                "id": item["cert_id"],
+                "id8": item["cert_id"][:8],
                 "signature": batch_sig[:20] + "...",
                 **item["data_payload_fields"]
             }
@@ -1052,7 +1219,11 @@ async def bulk_issue_from_excel(
             try:
                 print(f"DEBUG: Rendering PDF for cert {item['cert_id']}...")
                 pdf_utils.render_pdf_certificate(
-                    template_path, field_values, out_path, placeholder_map=placeholder_map
+                    template_path, 
+                    field_values, 
+                    out_path, 
+                    placeholder_map=placeholder_map,
+                    metadata={"cert_id": item["cert_id"]}
                 )
                 rendered_path = out_path
                 print(f"DEBUG: PDF rendered successfully: {out_path}")
@@ -1069,7 +1240,7 @@ async def bulk_issue_from_excel(
             cert_type=item["curr_cert_type"], 
             data_payload=oa_doc, 
             signature=batch_sig,
-            claim_pin="".join([str(random.randint(0, 9)) for _ in range(6)]), 
+            claim_pin=None,
             organization=item["curr_organization"], 
             batch_id=batch_id,
             template_type="pdf" if use_pdf else "html",
@@ -1089,9 +1260,11 @@ async def bulk_issue_from_excel(
             db.commit()
 
     db.commit()
+    print(f"DEBUG: Finished bulk issuance. {len(issued_certs)} certs created.")
     return {
         "message": f"{len(issued_certs)} certificates issued",
         "count": len(issued_certs),
+        "certificates": issued_certs
     }
 
 
@@ -1142,8 +1315,9 @@ async def upload_signature_assets(
         "id": record.id,
         "signer_name": signer_name,
         "signer_role": signer_role,
-        "signature_uploaded": sig_path is not None,
-        "stamp_uploaded": stamp_path is not None
+        "has_signature": sig_path is not None,
+        "has_stamp": stamp_path is not None,
+        "uploaded_at": record.uploaded_at.isoformat() if record.uploaded_at else None
     }
 
 
@@ -1209,7 +1383,8 @@ async def apply_digital_signatures(
                     signer_info={
                         "name": signer_name,
                         "role": signer_role
-                    }
+                    },
+                    metadata={"cert_id": cert_id}
                 )
                 cert.rendered_pdf_path = signed_pdf_path
             except Exception as e:
@@ -1251,7 +1426,12 @@ async def apply_digital_signatures(
         })
         cert.digital_signatures = existing_sigs
         cert.signing_status = "signed"
-        signed_certs.append({"id": cert_id, "student_name": cert.student_name})
+        
+        # UNIQUE PIN GENERATION ON SIGNING
+        if not cert.claim_pin:
+            cert.claim_pin = "".join([str(random.randint(0, 9)) for _ in range(6)])
+            
+        signed_certs.append({"id": cert_id, "student_name": cert.student_name, "pin": cert.claim_pin})
 
     db.commit()
     return {
@@ -1351,6 +1531,122 @@ async def import_data(file: UploadFile = File(...)):
     data = [row for row in csv_reader if "student_name" in row and "course_name" in row]
     return {"message": "Data imported successfully", "count": len(data), "data": data}
 
+@app.get("/api/preview-signature/{cert_id}/{sig_record_id}")
+async def preview_signature(
+    cert_id: str,
+    sig_record_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_admin)
+):
+    """
+    Generate a temporary preview of the certificate with the signature/stamp
+    overlaid. Returns a PNG image of the first page without saving permanently.
+    """
+    import tempfile, fitz  # PyMuPDF
+    try:
+        cert = db.query(models.Certificate).filter(models.Certificate.id == cert_id).first()
+        if not cert:
+            raise HTTPException(status_code=404, detail="Certificate not found")
+
+        sig_record = db.query(models.DigitalSignatureRecord).filter(
+            models.DigitalSignatureRecord.id == sig_record_id
+        ).first()
+        if not sig_record:
+            raise HTTPException(status_code=404, detail="Signature record not found")
+
+        sig_path = sig_record.signature_path
+        stamp_path = sig_record.stamp_path
+        pdf_template_path = "user_templates/template.pdf"
+
+        os.makedirs("generated_certs", exist_ok=True)
+
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False, dir="generated_certs") as tmp:
+            tmp_path = tmp.name
+
+        if cert.template_type == "pdf" and os.path.exists(pdf_template_path):
+            # Start from the already-rendered base PDF or re-render from template
+            base_path = cert.rendered_pdf_path if (cert.rendered_pdf_path and os.path.exists(cert.rendered_pdf_path)) else None
+
+            if base_path:
+                pdf_utils.apply_signatures_to_pdf(
+                    pdf_path=base_path,
+                    signature_img_path=sig_path,
+                    stamp_img_path=stamp_path,
+                    template_path=pdf_template_path,
+                    output_path=tmp_path,
+                    signer_info={
+                        "name": sig_record.signer_name,
+                        "role": sig_record.signer_role
+                    },
+                    metadata={"cert_id": cert.id}
+                )
+            else:
+                verify_url = f"{FRONTEND_URL}/verify?id={cert.id}"
+                qr_b64 = generate_qr_base64(verify_url)
+                field_values = {
+                    "student_name": cert.student_name,
+                    "course_name": cert.course_name,
+                    "issued_at": cert.issued_at.strftime("%Y-%m-%d") if cert.issued_at else "",
+                    "cert_id": cert.id,
+                    "signature": (cert.signature or "")[:20] + "...",
+                    "qr_code": qr_b64,
+                }
+                intermediate = tmp_path + "_base.pdf"
+                pdf_utils.render_pdf_certificate(
+                    pdf_template_path, field_values, intermediate,
+                    signature_img_path=sig_path,
+                    stamp_img_path=stamp_path,
+                    metadata={"cert_id": cert.id}
+                )
+                import shutil
+                shutil.move(intermediate, tmp_path)
+        else:
+            verify_url = f"{FRONTEND_URL}/verify?id={cert.id}"
+            qr_b64 = generate_qr_base64(verify_url)
+            html_template_path = "user_templates/custom_certificate.html"
+            if os.path.exists(html_template_path):
+                from jinja2 import FileSystemLoader, Environment as JinjaEnv
+                env = JinjaEnv(loader=FileSystemLoader("user_templates"))
+                tmpl = env.get_template("custom_certificate.html")
+            else:
+                tmpl = templates.get_template("certificate.html")
+            
+            render_ctx = {
+                "student_name": cert.student_name,
+                "course_name": cert.course_name,
+                "issued_at": cert.issued_at.strftime("%Y-%m-%d") if cert.issued_at else "",
+                "cert_id": cert.id,
+                "signature": (cert.signature or "")[:30] + "...",
+                "qr_code": qr_b64,
+            }
+            html_content = tmpl.render(**render_ctx)
+            result = BytesIO()
+            pisa.pisaDocument(BytesIO(html_content.encode("utf-8")), result)
+            with open(tmp_path, "wb") as f:
+                f.write(result.getvalue())
+
+        # Convert first page to PNG and return it
+        doc = fitz.open(tmp_path)
+        page = doc[0]
+        mat = fitz.Matrix(2.0, 2.0)
+        pix = page.get_pixmap(matrix=mat, alpha=False)
+        png_bytes = pix.tobytes("png")
+        doc.close()
+
+        return Response(content=png_bytes, media_type="image/png")
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Preview generation failed: {e}")
+    finally:
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except Exception:
+            pass
+
+
 @app.get("/api/download/{cert_id}")
 def download_certificate(cert_id: str, db: Session = Depends(get_db)):
     cert = db.query(models.Certificate).filter(models.Certificate.id == cert_id).first()
@@ -1362,7 +1658,7 @@ def download_certificate(cert_id: str, db: Session = Depends(get_db)):
         return FileResponse(
             path=cert.rendered_pdf_path,
             media_type="application/pdf",
-            headers={"Content-Disposition": f"inline; filename=cert_{cert.id}.pdf"}
+            headers={"Content-Disposition": f"attachment; filename=cert_{cert.id}.pdf"}
         )
 
     # ── PDF template path ──
@@ -1373,8 +1669,11 @@ def download_certificate(cert_id: str, db: Session = Depends(get_db)):
         qr_b64 = generate_qr_base64(verify_url)
         field_values = {
             "student_name": cert.student_name,
+            "name": cert.student_name,
             "course_name": cert.course_name,
+            "course": cert.course_name,
             "issued_at": cert.issued_at.strftime("%Y-%m-%d"),
+            "date": cert.issued_at.strftime("%Y-%m-%d"),
             "cert_id": cert.id,
             "signature": cert.signature[:20] + "...",
             "qr_code": qr_b64,
@@ -1399,12 +1698,20 @@ def download_certificate(cert_id: str, db: Session = Depends(get_db)):
                             field_values.setdefault(f"{k}_{subk}", subv)
                             field_values.setdefault(subk, subv)
 
+        field_values["id"] = cert.id
+        field_values["id8"] = cert.id[:8]
+
         print(f"DEBUG: On-the-fly field values: {list(field_values.keys())}")
         os.makedirs("generated_certs", exist_ok=True)
         out_path = f"generated_certs/{cert.id}_base.pdf"
         try:
             # We don't have the map cached globally, but we only do this once per download
-            pdf_utils.render_pdf_certificate(pdf_template_path, field_values, out_path)
+            pdf_utils.render_pdf_certificate(
+                pdf_template_path, 
+                field_values, 
+                out_path,
+                metadata={"cert_id": cert.id}
+            )
         except Exception as e:
             import traceback
             traceback.print_exc()
@@ -1417,7 +1724,7 @@ def download_certificate(cert_id: str, db: Session = Depends(get_db)):
         return FileResponse(
             path=out_path,
             media_type="application/pdf",
-            headers={"Content-Disposition": f"inline; filename=cert_{cert.id}.pdf"}
+            headers={"Content-Disposition": f"attachment; filename=cert_{cert.id}.pdf"}
         )
 
     # ── Fallback: HTML template → xhtml2pdf ──

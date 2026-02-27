@@ -1,15 +1,106 @@
 "use client"
 
-import React from "react"
-
+import React, { useState, useRef, useEffect } from "react"
 import { useAuth } from "@/context/AuthContext"
 import { motion } from "framer-motion"
-import { Settings, User, Shield, Key, Bell, Globe, Cpu, Database, PenTool, Hash } from "lucide-react"
+import { Settings, User, Shield, Key, Bell, Globe, Cpu, Database, PenTool, Hash, Upload, Loader2, CheckCircle, X } from "lucide-react"
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
+import axios from "axios"
+
+interface SignatureRecord {
+    id: number
+    signer_name: string
+    signer_role: string
+    has_signature: boolean
+    has_stamp: boolean
+    uploaded_at: string
+}
 
 export default function SettingsPage() {
     const { user } = useAuth()
+    const [signerName, setSignerName] = useState(user?.name || "")
+    const [signerRole, setSignerRole] = useState("Authorized Signatory")
+    const [signatureFile, setSignatureFile] = useState<File | null>(null)
+    const [stampFile, setStampFile] = useState<File | null>(null)
+    const [signaturePreview, setSignaturePreview] = useState<string | null>(null)
+    const [stampPreview, setStampPreview] = useState<string | null>(null)
+    const [uploading, setUploading] = useState(false)
+    const [uploadSuccess, setUploadSuccess] = useState(false)
+    const [records, setRecords] = useState<SignatureRecord[]>([])
+    const [loadingRecords, setLoadingRecords] = useState(true)
+    
+    const signatureInputRef = useRef<HTMLInputElement>(null)
+    const stampInputRef = useRef<HTMLInputElement>(null)
+
+    // Fetch existing signature records
+    useEffect(() => {
+        fetchSignatureRecords()
+    }, [])
+
+    const fetchSignatureRecords = async () => {
+        try {
+            const res = await axios.get("http://localhost:8000/api/sign/records")
+            setRecords(res.data)
+        } catch (error) {
+            console.error("Failed to fetch signature records", error)
+        } finally {
+            setLoadingRecords(false)
+        }
+    }
+
+    const handleSignatureSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0]
+        if (file) {
+            setSignatureFile(file)
+            const reader = new FileReader()
+            reader.onloadend = () => setSignaturePreview(reader.result as string)
+            reader.readAsDataURL(file)
+        }
+    }
+
+    const handleStampSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0]
+        if (file) {
+            setStampFile(file)
+            const reader = new FileReader()
+            reader.onloadend = () => setStampPreview(reader.result as string)
+            reader.readAsDataURL(file)
+        }
+    }
+
+    const handleUpload = async () => {
+        if (!signatureFile && !stampFile) return
+        
+        setUploading(true)
+        setUploadSuccess(false)
+        
+        try {
+            const formData = new FormData()
+            if (signatureFile) formData.append("signature_file", signatureFile)
+            if (stampFile) formData.append("stamp_file", stampFile)
+            formData.append("signer_name", signerName)
+            formData.append("signer_role", signerRole)
+            
+            await axios.post("http://localhost:8000/api/sign/upload", formData, {
+                headers: { "Content-Type": "multipart/form-data" }
+            })
+            
+            setUploadSuccess(true)
+            setSignatureFile(null)
+            setStampFile(null)
+            setSignaturePreview(null)
+            setStampPreview(null)
+            fetchSignatureRecords()
+            
+            setTimeout(() => setUploadSuccess(false), 3000)
+        } catch (error) {
+            console.error("Upload failed", error)
+            alert("Failed to upload signature assets")
+        } finally {
+            setUploading(false)
+        }
+    }
 
     return (
         <div className="p-8 max-w-4xl mx-auto space-y-8">
@@ -73,22 +164,138 @@ export default function SettingsPage() {
                             <CardDescription className="font-medium text-slate-500">Manage your digital stamp and signature profile for certificate sealing.</CardDescription>
                         </CardHeader>
                         <CardContent className="space-y-6">
-                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                                <div className="p-6 rounded-2xl border-2 border-dashed border-slate-200 hover:border-indigo-400 transition-colors bg-slate-50 flex flex-col items-center justify-center text-center group cursor-pointer">
-                                    <div className="w-12 h-12 rounded-full bg-white shadow-sm flex items-center justify-center mb-3 group-hover:scale-110 transition-transform">
-                                        <PenTool className="w-6 h-6 text-slate-400 group-hover:text-indigo-600" />
-                                    </div>
-                                    <p className="text-xs font-black text-slate-600 uppercase tracking-widest">Digital Signature</p>
-                                    <p className="text-[10px] text-slate-400 mt-1 font-bold">Upload PNG (Transparent)</p>
+                            {/* Signer Info */}
+                            <div className="grid grid-cols-2 gap-4">
+                                <div className="space-y-2">
+                                    <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">Signer Name</label>
+                                    <input
+                                        type="text"
+                                        value={signerName}
+                                        onChange={(e) => setSignerName(e.target.value)}
+                                        className="w-full px-4 py-2 rounded-xl border border-slate-200 focus:ring-2 focus:ring-indigo-600/20 focus:border-indigo-600 outline-none text-sm font-semibold"
+                                        placeholder="Enter signer name"
+                                    />
                                 </div>
-                                <div className="p-6 rounded-2xl border-2 border-dashed border-slate-200 hover:border-indigo-400 transition-colors bg-slate-50 flex flex-col items-center justify-center text-center group cursor-pointer">
-                                    <div className="w-12 h-12 rounded-full bg-white shadow-sm flex items-center justify-center mb-3 group-hover:scale-110 transition-transform">
-                                        <Hash className="w-6 h-6 text-slate-400 group-hover:text-indigo-600" />
-                                    </div>
-                                    <p className="text-xs font-black text-slate-600 uppercase tracking-widest">Official Stamp</p>
-                                    <p className="text-[10px] text-slate-400 mt-1 font-bold">Upload Circular Seal</p>
+                                <div className="space-y-2">
+                                    <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">Signer Role</label>
+                                    <input
+                                        type="text"
+                                        value={signerRole}
+                                        onChange={(e) => setSignerRole(e.target.value)}
+                                        className="w-full px-4 py-2 rounded-xl border border-slate-200 focus:ring-2 focus:ring-indigo-600/20 focus:border-indigo-600 outline-none text-sm font-semibold"
+                                        placeholder="e.g. Principal, Dean"
+                                    />
                                 </div>
                             </div>
+
+                            {/* Upload Areas */}
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                {/* Signature Upload */}
+                                <div 
+                                    onClick={() => signatureInputRef.current?.click()}
+                                    className="p-6 rounded-2xl border-2 border-dashed border-slate-200 hover:border-indigo-400 transition-colors bg-slate-50 flex flex-col items-center justify-center text-center group cursor-pointer relative overflow-hidden min-h-[160px]"
+                                >
+                                    <input
+                                        ref={signatureInputRef}
+                                        type="file"
+                                        accept="image/png,image/jpeg,image/jpg"
+                                        className="hidden"
+                                        onChange={handleSignatureSelect}
+                                    />
+                                    {signaturePreview ? (
+                                        <div className="relative w-full">
+                                            <img src={signaturePreview} alt="Signature preview" className="max-h-24 mx-auto object-contain" />
+                                            <button 
+                                                onClick={(e) => { e.stopPropagation(); setSignatureFile(null); setSignaturePreview(null); }}
+                                                className="absolute -top-2 -right-2 w-6 h-6 bg-red-500 text-white rounded-full flex items-center justify-center hover:bg-red-600"
+                                            >
+                                                <X className="w-3 h-3" />
+                                            </button>
+                                        </div>
+                                    ) : (
+                                        <>
+                                            <div className="w-12 h-12 rounded-full bg-white shadow-sm flex items-center justify-center mb-3 group-hover:scale-110 transition-transform">
+                                                <PenTool className="w-6 h-6 text-slate-400 group-hover:text-indigo-600" />
+                                            </div>
+                                            <p className="text-xs font-black text-slate-600 uppercase tracking-widest">Digital Signature</p>
+                                            <p className="text-[10px] text-slate-400 mt-1 font-bold">Click to upload PNG</p>
+                                        </>
+                                    )}
+                                </div>
+
+                                {/* Stamp Upload */}
+                                <div 
+                                    onClick={() => stampInputRef.current?.click()}
+                                    className="p-6 rounded-2xl border-2 border-dashed border-slate-200 hover:border-indigo-400 transition-colors bg-slate-50 flex flex-col items-center justify-center text-center group cursor-pointer relative overflow-hidden min-h-[160px]"
+                                >
+                                    <input
+                                        ref={stampInputRef}
+                                        type="file"
+                                        accept="image/png,image/jpeg,image/jpg"
+                                        className="hidden"
+                                        onChange={handleStampSelect}
+                                    />
+                                    {stampPreview ? (
+                                        <div className="relative w-full">
+                                            <img src={stampPreview} alt="Stamp preview" className="max-h-24 mx-auto object-contain" />
+                                            <button 
+                                                onClick={(e) => { e.stopPropagation(); setStampFile(null); setStampPreview(null); }}
+                                                className="absolute -top-2 -right-2 w-6 h-6 bg-red-500 text-white rounded-full flex items-center justify-center hover:bg-red-600"
+                                            >
+                                                <X className="w-3 h-3" />
+                                            </button>
+                                        </div>
+                                    ) : (
+                                        <>
+                                            <div className="w-12 h-12 rounded-full bg-white shadow-sm flex items-center justify-center mb-3 group-hover:scale-110 transition-transform">
+                                                <Hash className="w-6 h-6 text-slate-400 group-hover:text-indigo-600" />
+                                            </div>
+                                            <p className="text-xs font-black text-slate-600 uppercase tracking-widest">Official Stamp</p>
+                                            <p className="text-[10px] text-slate-400 mt-1 font-bold">Click to upload seal</p>
+                                        </>
+                                    )}
+                                </div>
+                            </div>
+
+                            {/* Upload Button */}
+                            <Button 
+                                onClick={handleUpload}
+                                disabled={uploading || (!signatureFile && !stampFile) || !signerName}
+                                className="w-full h-12 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl shadow-lg shadow-indigo-600/20"
+                            >
+                                {uploading ? (
+                                    <><Loader2 className="w-5 h-5 animate-spin mr-2" /> Uploading...</>
+                                ) : uploadSuccess ? (
+                                    <><CheckCircle className="w-5 h-5 mr-2" /> Upload Successful!</>
+                                ) : (
+                                    <><Upload className="w-5 h-5 mr-2" /> Upload Signature Assets</>
+                                )}
+                            </Button>
+
+                            {/* Previous Records */}
+                            {records.length > 0 && (
+                                <div className="space-y-3 pt-4 border-t border-slate-100">
+                                    <p className="text-xs font-bold text-slate-500 uppercase tracking-wider">Previous Signatures</p>
+                                    <div className="space-y-2 max-h-40 overflow-y-auto">
+                                        {records.map((record) => (
+                                            <div key={record.id} className="flex items-center justify-between p-3 bg-slate-50 rounded-xl border border-slate-100">
+                                                <div>
+                                                    <p className="text-sm font-semibold text-slate-900">{record.signer_name}</p>
+                                                    <p className="text-xs text-slate-500">{record.signer_role}</p>
+                                                </div>
+                                                <div className="flex gap-2">
+                                                    {record.has_signature && (
+                                                        <span className="px-2 py-1 bg-indigo-100 text-indigo-600 text-[10px] font-bold rounded uppercase">Sig</span>
+                                                    )}
+                                                    {record.has_stamp && (
+                                                        <span className="px-2 py-1 bg-emerald-100 text-emerald-600 text-[10px] font-bold rounded uppercase">Stamp</span>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
 
                             <div className="p-4 rounded-xl bg-amber-50 border border-amber-100 flex gap-3 items-start">
                                 <Shield className="w-5 h-5 text-amber-600 mt-0.5" />

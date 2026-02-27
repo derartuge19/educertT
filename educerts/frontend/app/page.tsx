@@ -10,6 +10,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Modal } from "@/components/ui/modal"
+import { getApiBaseUrl } from "@/lib/api-config"
 
 interface Certificate {
   id: string
@@ -47,8 +48,8 @@ export default function Dashboard() {
     if (!user) return
     try {
       const endpoint = user.is_admin
-        ? "http://localhost:8000/api/certificates"
-        : `http://localhost:8000/api/certificates/${user.name}`
+        ? `${getApiBaseUrl()}/api/certificates`
+        : `${getApiBaseUrl()}/api/certificates/${user.name}`
       const res = await axios.get(endpoint)
       setRecentCerts(Array.isArray(res.data) ? res.data.slice(0, 5) : [])
 
@@ -80,7 +81,7 @@ export default function Dashboard() {
       onAction: async () => {
         setModalConfig(p => ({ ...p, isLoading: true }))
         try {
-          await axios.post(`http://localhost:8000/api/revoke/${id}`)
+          await axios.post(`${getApiBaseUrl()}/api/revoke/${id}`)
           await fetchCerts()
           setModalConfig({
             isOpen: true,

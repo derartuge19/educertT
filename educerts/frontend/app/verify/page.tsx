@@ -1,11 +1,13 @@
 "use client"
 
-import React, { useState } from "react"
+import React, { useState, useEffect } from "react"
+import { useAuth } from "@/context/AuthContext"
 import { motion, AnimatePresence } from "framer-motion"
-import { Search, ShieldCheck, ShieldAlert, FileSearch, Upload, CheckCircle, XCircle, Info, Hash, Fingerprint, Lock, Loader2 } from "lucide-react"
+import { Search, ShieldCheck, ShieldAlert, FileSearch, Upload, CheckCircle, XCircle, Info, Hash, Fingerprint, Loader2, ArrowLeft, Award } from "lucide-react"
 import axios from "axios"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import Link from "next/link"
 
 interface VerificationResult {
     summary: {
@@ -14,6 +16,7 @@ interface VerificationResult {
         documentIntegrity: boolean
         issuerIdentity: boolean
         signature: boolean
+        registryCheck: boolean
     }
     data: Array<{
         type: string
@@ -28,24 +31,38 @@ interface VerificationResult {
 }
 
 export default function VerifyPage() {
+    const { user } = useAuth()
     const [verifyId, setVerifyId] = useState("")
     const [loading, setLoading] = useState(false)
     const [result, setResult] = useState<VerificationResult | null>(null)
+    const [error, setError] = useState<string | null>(null)
     const [activeMode, setActiveMode] = useState<"id" | "file">("id")
     const [dragActive, setDragActive] = useState(false)
 
-    const handleVerifyId = async () => {
-        if (!verifyId) return
+    // Check for ID in URL params
+    useEffect(() => {
+        const params = new URLSearchParams(window.location.search)
+        const id = params.get("id")
+        if (id) {
+            setVerifyId(id)
+            handleVerifyId(id)
+        }
+    }, [])
+
+    const handleVerifyId = async (id?: string) => {
+        const certId = (id || verifyId).trim().toLowerCase()
+        if (!certId) return
         setLoading(true)
         setResult(null)
+        setError(null)
         try {
             const res = await axios.post("http://localhost:8000/api/verify", {
-                certificate_id: verifyId
+                certificate_id: certId
             })
             setResult(res.data)
-        } catch (err: unknown) {
+        } catch (err: any) {
             setResult(null)
-            alert("Verification failed: Certificate not found.")
+            setError("Certificate not found. Make sure you entered the correct ID.")
         } finally {
             setLoading(false)
         }
@@ -54,18 +71,29 @@ export default function VerifyPage() {
     const handleFileUpload = async (file: File) => {
         setLoading(true)
         setResult(null)
+        setError(null)
         try {
-            const text = await file.text()
-            const jsonData = JSON.parse(text)
-
-            const res = await axios.post<VerificationResult>("http://localhost:8000/api/verify", {
-                data_payload: jsonData
-            })
-            setResult(res.data)
+            if (file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf")) {
+                const formData = new FormData()
+                formData.append("file", file)
+                const res = await axios.post<VerificationResult>("http://localhost:8000/api/verify/pdf", formData)
+                setResult(res.data)
+            } else {
+                const text = await file.text()
+                try {
+                    const jsonData = JSON.parse(text)
+                    const res = await axios.post<VerificationResult>("http://localhost:8000/api/verify", {
+                        data_payload: jsonData
+                    })
+                    setResult(res.data)
+                } catch (e) {
+                    setError("Invalid JSON document format.")
+                }
+            }
         } catch (err: any) {
             setResult(null)
             const errorMsg = err.response?.data?.detail || err.message || "Invalid document format."
-            alert(`Verification failed: ${JSON.stringify(errorMsg)}`)
+            setError(`Verification failed: ${errorMsg}`)
         } finally {
             setLoading(false)
         }
@@ -102,38 +130,69 @@ export default function VerifyPage() {
 
     return (
         <div className="p-8 max-w-4xl mx-auto space-y-12">
-            <div className="text-center space-y-4">
-                <motion.div
-                    initial={{ scale: 0.8, opacity: 0 }}
-                    animate={{ scale: 1, opacity: 1 }}
-                    className="w-16 h-16 bg-white rounded-2xl flex items-center justify-center mx-auto mb-6 shadow-xl border border-slate-100"
+            {/* Header */}
+            <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                    {user && !user.is_admin && (
+                        <Link href="/student">
+                            <Button variant="outline" size="icon" className="rounded-xl">
+                                <ArrowLeft className="w-4 h-4" />
+                            </Button>
+                        </Link>
+                    )}
+                    <div>
+                        <h1 className="text-3xl font-bold text-slate-900 tracking-tight flex items-center gap-3">
+                            <Search className="w-8 h-8 text-indigo-600" />
+                            Verify Credential
+                        </h1>
+                        <p className="text-slate-500 font-medium mt-1">
+                            Verify the authenticity of any EduCerts credential
+                        </p>
+                    </div>
+                </div>
+                <Link
+                    href="/verify-public"
+                    target="_blank"
+                    className="text-sm text-indigo-600 hover:text-indigo-700 font-semibold flex items-center gap-1"
                 >
-                    <Search className="w-8 h-8 text-indigo-600" />
-                </motion.div>
-                <h1 className="text-4xl font-bold text-slate-900 tracking-tight">Trust but <span className="text-indigo-600 underline decoration-indigo-600/30">Verify</span>.</h1>
-                <p className="text-slate-500 max-w-xl mx-auto font-medium">
-                    EduCerts uses OpenAttestation standards to ensure every credential is authentic, issued by a valid authority, and untampered.
-                </p>
+                    Open Public Verifier
+                    <Award className="w-4 h-4" />
+                </Link>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                {/* Column 1: Verification Inputs */}
                 <div className="space-y-6">
                     <div className="flex gap-2 p-1 bg-slate-100 border border-slate-200 rounded-xl shadow-sm">
                         <button
-                            onClick={() => setActiveMode("id")}
+                            onClick={() => { setActiveMode("id"); setError(null) }}
                             className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-semibold transition-all ${activeMode === "id" ? "bg-white text-indigo-700 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}
                         >
                             <Hash className="w-4 h-4" />
                             By ID
                         </button>
                         <button
-                            onClick={() => setActiveMode("file")}
+                            onClick={() => { setActiveMode("file"); setError(null) }}
                             className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-semibold transition-all ${activeMode === "file" ? "bg-white text-indigo-700 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}
                         >
                             <Upload className="w-4 h-4" />
                             By Document
                         </button>
                     </div>
+
+                    {error && (
+                        <motion.div
+                            initial={{ opacity: 0, y: -10 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            className="flex items-start gap-3 p-4 bg-red-50 border border-red-100 rounded-2xl shadow-sm"
+                        >
+                            <ShieldAlert className="w-5 h-5 text-red-500 shrink-0 mt-0.5" />
+                            <div>
+                                <p className="text-sm text-red-800 font-bold">Verification Error</p>
+                                <p className="text-xs text-red-600 font-medium mt-0.5">{error}</p>
+                            </div>
+                        </motion.div>
+                    )}
 
                     <AnimatePresence mode="wait">
                         {activeMode === "id" ? (
@@ -154,13 +213,14 @@ export default function VerifyPage() {
                                             <Fingerprint className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
                                             <input
                                                 type="text"
-                                                placeholder="Paste Certificate ID..."
+                                                placeholder="Paste Certificate ID (full UUID or 8-char short ID)..."
                                                 value={verifyId}
-                                                onChange={(e) => setVerifyId(e.target.value)}
+                                                onChange={(e) => { setVerifyId(e.target.value); setError(null) }}
+                                                onKeyDown={(e) => e.key === "Enter" && handleVerifyId()}
                                                 className="w-full bg-slate-50 border-slate-200 rounded-xl px-10 py-3 text-slate-900 font-mono text-sm focus:ring-2 focus:ring-indigo-600/20 outline-none border font-semibold"
                                             />
                                         </div>
-                                        <Button onClick={handleVerifyId} disabled={loading || !verifyId} className="w-full bg-indigo-600 hover:bg-indigo-700 h-11 rounded-xl font-bold">
+                                        <Button onClick={() => handleVerifyId()} disabled={loading || !verifyId} className="w-full bg-indigo-600 hover:bg-indigo-700 h-11 rounded-xl font-bold">
                                             {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : "Verify Authenticity"}
                                         </Button>
                                     </CardContent>
@@ -181,20 +241,30 @@ export default function VerifyPage() {
                                     className={`h-[200px] border-2 border-dashed rounded-2xl flex flex-col items-center justify-center gap-4 transition-all shadow-sm ${dragActive ? "border-indigo-600 bg-indigo-50 shadow-indigo-600/10" : "border-slate-200 bg-white"}`}
                                 >
                                     <div className="w-12 h-12 bg-slate-50 rounded-xl flex items-center justify-center border border-slate-100">
-                                        <FileSearch className="w-6 h-6 text-indigo-600" />
+                                        {loading ? (
+                                            <Loader2 className="w-6 h-6 text-indigo-600 animate-spin" />
+                                        ) : (
+                                            <FileSearch className="w-6 h-6 text-indigo-600" />
+                                        )}
                                     </div>
                                     <div className="text-center">
-                                        <p className="text-sm font-bold text-slate-900">Drag your OA document here</p>
-                                        <p className="text-[10px] text-slate-400 font-bold mt-1 tracking-wider uppercase">Accepts .json only</p>
+                                        <p className="text-sm font-bold text-slate-900">
+                                            {loading ? "Processing Document..." : "Drag Certificate PDF here"}
+                                        </p>
+                                        <p className="text-[10px] text-slate-400 font-bold mt-1 tracking-wider uppercase">Accepts .pdf or .json</p>
                                     </div>
-                                    <input
-                                        type="file"
-                                        accept=".json"
-                                        className="hidden"
-                                        id="file-verify"
-                                        onChange={(e) => e.target.files && handleFileUpload(e.target.files[0])}
-                                    />
-                                    <label htmlFor="file-verify" className="text-xs text-indigo-400 hover:underline cursor-pointer font-semibold">Or browse files</label>
+                                    {!loading && (
+                                        <>
+                                            <input
+                                                type="file"
+                                                accept=".json,.pdf"
+                                                className="hidden"
+                                                id="file-verify"
+                                                onChange={(e) => e.target.files && handleFileUpload(e.target.files[0])}
+                                            />
+                                            <label htmlFor="file-verify" className="text-xs text-indigo-400 hover:underline cursor-pointer font-semibold">Or browse files</label>
+                                        </>
+                                    )}
                                 </div>
                             </motion.div>
                         )}
@@ -208,13 +278,14 @@ export default function VerifyPage() {
                     </div>
                 </div>
 
+                {/* Column 2: Results */}
                 <div className="relative">
                     <AnimatePresence mode="wait">
                         {!result ? (
                             <motion.div
                                 initial={{ opacity: 0 }}
                                 animate={{ opacity: 1 }}
-                                className="h-full flex flex-col items-center justify-center space-y-4 border border-slate-200 rounded-3xl bg-white border-dashed shadow-inner"
+                                className="h-full flex flex-col items-center justify-center space-y-4 border border-slate-200 rounded-3xl bg-white border-dashed shadow-inner min-h-[300px]"
                             >
                                 <ShieldCheck className="w-16 h-16 text-slate-100" />
                                 <p className="text-slate-400 font-bold uppercase tracking-widest text-xs">Awaiting Data...</p>
@@ -258,6 +329,7 @@ export default function VerifyPage() {
                                         <FragmentStatus label="Document Integrity" isValid={result.summary.documentIntegrity} />
                                         <FragmentStatus label="Issuance Status" isValid={result.summary.documentStatus} />
                                         <FragmentStatus label="Issuer Identity" isValid={result.summary.issuerIdentity} />
+                                        <FragmentStatus label="Registry Verification" isValid={result.summary.registryCheck} />
                                         <FragmentStatus label="Cryptographic Signature" isValid={result.summary.signature} />
                                     </div>
 

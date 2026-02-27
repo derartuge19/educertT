@@ -3,11 +3,12 @@
 import React, { useEffect, useState } from "react"
 import { useAuth } from "@/context/AuthContext"
 import { motion, AnimatePresence } from "framer-motion"
-import { Award, Download, FileText, Search, ShieldCheck, ExternalLink, Calendar, GraduationCap, ArrowLeft, Loader2, QrCode, Share2, LogOut } from "lucide-react"
+import { Award, Download, FileText, Search, ShieldCheck, ExternalLink, Calendar, GraduationCap, ArrowLeft, Loader2, QrCode, Share2, LogOut, Smartphone } from "lucide-react"
 import axios from "axios"
 import Link from "next/link"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
+import { getApiBaseUrl } from "@/lib/api-config"
 
 interface Certificate {
     id: string
@@ -27,7 +28,7 @@ export default function StudentPortal() {
         if (user) {
             const fetchCerts = async () => {
                 try {
-                    const res = await axios.get<Certificate[]>(`http://localhost:8000/api/certificates/${user.name}`)
+                    const res = await axios.get<Certificate[]>(`${getApiBaseUrl()}/api/certificates/${user.name}`)
                     setCerts(res.data)
                 } catch (error) {
                     console.error("Error fetching student certs", error)
@@ -63,20 +64,28 @@ export default function StudentPortal() {
                             <h1 className="font-bold text-xl tracking-tight">EduCerts<span className="text-indigo-200">.io</span></h1>
                         </div>
                         <div className="flex items-center gap-4">
+                            <Link href="/wallet">
+                                <Button
+                                    variant="ghost"
+                                    className="text-white hover:bg-white/10"
+                                >
+                                    <Smartphone className="w-4 h-4 mr-2" />
+                                    Open Wallet
+                                </Button>
+                            </Link>
                             <div className="flex items-center gap-2 bg-white/10 px-4 py-2 rounded-full backdrop-blur-sm">
                                 <ShieldCheck className="w-4 h-4 text-emerald-400" />
-                                <span className="text-xs font-bold uppercase tracking-widest">Verified Student Profile</span>
+                                <span className="text-xs font-bold uppercase tracking-widest">Verified Student</span>
                             </div>
                             <Button
                                 variant="ghost"
                                 className="text-white hover:bg-white/10"
                                 onClick={() => {
-                                    // Handle Logout or simple back
                                     window.location.href = "/login"
                                 }}
                             >
                                 <LogOut className="w-4 h-4 mr-2" />
-                                Exit Portal
+                                Exit
                             </Button>
                         </div>
                     </div>
@@ -149,7 +158,7 @@ export default function StudentPortal() {
 
                                             <div className="flex items-center gap-3">
                                                 <Button
-                                                    onClick={() => window.open(`http://localhost:8000/api/download/${cert.id}`)}
+                                                    onClick={() => window.open(`${getApiBaseUrl()}/api/download/${cert.id}`)}
                                                     className="bg-slate-900 hover:bg-slate-800 text-white rounded-xl shadow-lg shadow-slate-900/10 px-6 font-bold"
                                                 >
                                                     <Download className="w-4 h-4 mr-2" />

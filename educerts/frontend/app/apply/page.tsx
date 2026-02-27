@@ -7,6 +7,7 @@ import axios from "axios"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
 import qrcode from "qrcode"
+import { API_BASE_URL } from "@/lib/api-config"
 
 export default function ApplyPage() {
     const [step, setStep] = useState(1)
@@ -17,7 +18,7 @@ export default function ApplyPage() {
     const generateChallenge = async () => {
         setLoading(true)
         try {
-            const res = await axios.get("http://localhost:8000/api/apply/challenge")
+            const res = await axios.get(`${API_BASE_URL}/api/apply/challenge`)
             const url = await qrcode.toDataURL(JSON.stringify(res.data))
             setQrData(url)
             setStep(2)

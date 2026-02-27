@@ -2,6 +2,7 @@
 
 import React, { createContext, useContext, useState, useEffect } from "react"
 import axios from "axios"
+import { getApiBaseUrl } from "@/lib/api-config"
 
 // Configure axios to always send cookies
 axios.defaults.withCredentials = true
@@ -42,7 +43,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         // On mount, check if there's an active session via the HttpOnly cookie
         const restoreSession = async () => {
             try {
-                const res = await axios.get<User>("http://localhost:8000/api/me")
+                const res = await axios.get<User>(`${getApiBaseUrl()}/api/me`)
                 setUser(res.data)
             } catch {
                 // No valid cookie — user is not logged in
@@ -60,14 +61,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         params.append("password", formData.password)
 
         // Backend sets the HttpOnly cookie in the response
-        const res = await axios.post<{ user: User }>("http://localhost:8000/api/login", params)
+        const res = await axios.post<{ user: User }>(`${getApiBaseUrl()}/api/login`, params)
         setUser(res.data.user)
         window.location.href = "/"
     }
 
     const signup = async (userData: SignupData) => {
         try {
-            await axios.post("http://localhost:8000/api/signup", userData)
+            await axios.post(`${getApiBaseUrl()}/api/signup`, userData)
         } catch (err: unknown) {
             console.error("Signup failed", err)
             throw err
@@ -76,7 +77,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     const logout = async () => {
         try {
-            await axios.post("http://localhost:8000/api/logout")
+            await axios.post(`${getApiBaseUrl()}/api/logout`)
         } catch { /* ignore */ }
         setUser(null)
         window.location.href = "/login"
