@@ -22,6 +22,11 @@ from dotenv import load_dotenv
 
 import models, schemas, crypto_utils, database, auth_utils, oa_logic
 import pdf_utils
+import pdf_hash_utils
+import pdf_ribbon_utils
+import verification_metadata
+import pdf_javascript_templates
+from ribbon_styling import RibbonStyle, RibbonStyleManager, RibbonTheme, RibbonPosition
 
 load_dotenv()
 
@@ -96,29 +101,42 @@ def get_current_user_from_cookie(
 ) -> Optional[models.User]:
     """Dependency to extract and validate the user from the HttpOnly cookie."""
     if not access_token:
+        print("DEBUG AUTH: No access_token cookie found")
         return None
     
     payload = auth_utils.decode_access_token(access_token)
     if not payload:
+        print("DEBUG AUTH: Failed to decode access token")
         return None
         
     username = payload.get("sub")
     if not username:
+        print("DEBUG AUTH: No username in token payload")
         return None
         
     user = db.query(models.User).filter(models.User.name == username).first()
+    if user:
+        print(f"DEBUG AUTH: User authenticated: {user.name} (admin={user.is_admin})")
+    else:
+        print(f"DEBUG AUTH: User not found in database: {username}")
     return user
 
 def require_user(current_user: Optional[models.User] = Depends(get_current_user_from_cookie)) -> models.User:
     """Dependency that requires an authenticated user."""
     if not current_user:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+        raise HTTPException(
+            status_code=401, 
+            detail="Not authenticated. Please log in again."
+        )
     return current_user
 
 def require_admin(current_user: models.User = Depends(require_user)) -> models.User:
     """Dependency that requires an admin user."""
     if not current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Admin access required")
+        raise HTTPException(
+            status_code=403, 
+            detail=f"Admin access required. Current user '{current_user.name}' is not an admin."
+        )
     return current_user
 
 def generate_qr_base64(data: str):
@@ -307,6 +325,25 @@ def issue_certificate(cert_data: schemas.CertificateCreate, db: Session = Depend
         except Exception as e:
             print(f"DEBUG: Single issuance PDF render failed: {e}")
 
+    # Compute content hash for tamper detection
+    content_hash = None
+    if rendered_path and os.path.exists(rendered_path):
+        try:
+            # Compute SHA-256 hash of PDF content
+            content_hash = pdf_hash_utils.compute_pdf_content_hash(rendered_path)
+            
+            # Embed hash in PDF metadata for offline verification
+            pdf_hash_utils.embed_hash_in_pdf_metadata(
+                rendered_path,
+                content_hash,
+                cert_id
+            )
+            print(f"DEBUG: Computed and embedded content hash: {content_hash[:8]}...")
+        except Exception as e:
+            # Log error but don't block issuance (graceful degradation)
+            print(f"WARNING: Failed to compute/embed content hash: {e}")
+            content_hash = None
+
     db_cert = models.Certificate(
         id=cert_id,
         student_name=cert_data.student_name,
@@ -320,11 +357,52 @@ def issue_certificate(cert_data: schemas.CertificateCreate, db: Session = Depend
         template_type="pdf" if os.path.exists(pdf_template_path) else "html",
         rendered_pdf_path=rendered_path,
         signing_status="unsigned",
-        claimed=False
+        claimed=False,
+        content_hash=content_hash  # Store hash for verification
     )
     db.add(db_cert)
     db.commit()
     db.refresh(db_cert)
+    
+    # ═══════════════════════════════════════════════════════════════════
+    # ADD BASIC VERIFICATION RIBBON TO ISSUED CERTIFICATE
+    # ═══════════════════════════════════════════════════════════════════
+    if rendered_path and os.path.exists(rendered_path):
+        try:
+            # Create basic verification result for newly issued certificate
+            verification_request = schemas.VerificationRequest(certificate_id=cert_id)
+            verification_result = verify_certificate(verification_request, db)
+            
+            # Create ribbon with basic styling for unsigned certificates
+            ribbon_output_path = f"generated_certs/{cert_id}_with_ribbon.pdf"
+            
+            # Use a subtle styling for unsigned certificates
+            ribbon_style = RibbonStyleManager.create_theme_style(
+                RibbonTheme.SLATE_PROFESSIONAL, 
+                RibbonPosition.TOP_LEFT
+            )
+            
+            # Add basic ribbon to the issued certificate
+            ribbon_success = pdf_ribbon_utils.add_interactive_ribbon_to_pdf(
+                pdf_path=rendered_path,
+                output_path=ribbon_output_path,
+                cert=db_cert,
+                verification_result=verification_result,
+                styling=ribbon_style
+            )
+            
+            if ribbon_success:
+                # Update the certificate path to point to the ribbon-enhanced version
+                db_cert.rendered_pdf_path = ribbon_output_path
+                db.commit()
+                print(f"DEBUG: Successfully added basic ribbon to issued certificate {cert_id}")
+            else:
+                print(f"WARNING: Failed to add basic ribbon to issued certificate {cert_id}")
+                
+        except Exception as ribbon_error:
+            print(f"WARNING: Basic ribbon failed for issued certificate {cert_id}: {ribbon_error}")
+            # Continue with standard certificate - graceful degradation
+    
     return db_cert
 
 
@@ -490,11 +568,12 @@ def verify_certificate(request: schemas.VerificationRequest, db: Session = Depen
 @app.post("/api/verify/pdf")
 async def verify_pdf_certificate(file: UploadFile = File(...), db: Session = Depends(get_db)):
     """
-    Extracts the certificate ID from a PDF file (via text extraction or regex)
-    and verifies it against the registry.
+    Extracts the certificate ID from a PDF file and verifies it against the registry.
+    Now includes cryptographic content hash validation to detect tampering.
     """
     import fitz  # PyMuPDF
     import re
+    import tempfile
 
     content = await file.read()
 
@@ -502,84 +581,165 @@ async def verify_pdf_certificate(file: UploadFile = File(...), db: Session = Dep
     if not content.startswith(b"%PDF"):
         raise HTTPException(status_code=400, detail="Uploaded file is not a valid PDF.")
 
+    # Save to temporary file for hash computation
+    temp_fd, temp_path = tempfile.mkstemp(suffix=".pdf")
     try:
-        doc = fitz.open(stream=content, filetype="pdf")
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Could not open PDF: {e}")
-
-    # NEW: Metadata-first extraction (highest reliability)
-    # We check 'subject' because 'cert_id' is non-standard and PyMuPDF might reject it
-    cert_id = doc.metadata.get("subject") or doc.metadata.get("cert_id")
-    if cert_id:
-        print(f"DEBUG verify/pdf: Found ID in metadata: {cert_id}")
-
-    # Extract all text across all pages
-    text = ""
-    for page in doc:
-        text += page.get_text()
-    doc.close()
-
-    print(f"DEBUG verify/pdf: Extracted text length={len(text)}, sample={text[:300]!r}")
-
-    # ONLY reset if we didn't find it in metadata
-    if not cert_id:
-        # Pattern 1: Full UUID (most reliable)
-        match = re.search(
-            r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})",
-            text, re.IGNORECASE
-        )
-        if match:
-            cert_id = match.group(1).lower()
-            print(f"DEBUG verify/pdf: Found full UUID: {cert_id}")
-
-    # Pattern 2: "#XXXXXXXX" (8-char hex with hash — matches how cards display it)
-    if not cert_id:
-        match = re.search(r"#([0-9A-F]{8})\b", text, re.IGNORECASE)
-        if match:
-            cert_id = match.group(1).lower()
-            print(f"DEBUG verify/pdf: Found short ID with #: {cert_id}")
-
-    # Pattern 3: "ID: XXXXXXXX" or "ID:XXXXXXXX" or "cert_id: XXXXXXXX"
-    if not cert_id:
-        match = re.search(r"(?:cert[_-]?id|certificate[_\s]id|ID)\s*[:\-]\s*([0-9A-F]{8,36})", text, re.IGNORECASE)
-        if match:
-            cert_id = match.group(1).strip().lower()
-            print(f"DEBUG verify/pdf: Found labeled ID: {cert_id}")
-
-    # Pattern 4: Any standalone 8-char hex block (last resort)
-    if not cert_id:
-        match = re.search(r"\b([0-9A-F]{8})\b", text, re.IGNORECASE)
-        if match:
-            cert_id = match.group(1).lower()
-            print(f"DEBUG verify/pdf: Found bare 8-char hex: {cert_id}")
-
-    if not cert_id:
-        # Pattern 5: Raw binary scan as absolute last resort
-        try:
-            raw_text = content.decode("utf-8", errors="ignore")
-            raw_match = re.search(r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})", raw_text, re.IGNORECASE)
-            if raw_match:
-                cert_id = raw_match.group(1).lower()
-                print(f"DEBUG verify/pdf: Found ID via RAW binary scan: {cert_id}")
-        except:
-            pass
-
-    if not cert_id:
-        # Check if the PDF is actually empty (potentially a scanned image)
-        if len(text.strip()) < 10:
-            raise HTTPException(
-                status_code=400, 
-                detail="This PDF appears to be an image or scanned document. EduCerts digital certificates must be verifiable PDFs with a text layer or QR code."
-            )
+        with os.fdopen(temp_fd, 'wb') as tmp_file:
+            tmp_file.write(content)
         
-        raise HTTPException(
-            status_code=400,
-            detail="Could not find a valid Certificate ID in this PDF. Please ensure you are uploading the original digital certificate file."
-        )
+        # Open PDF for metadata extraction
+        try:
+            doc = fitz.open(temp_path)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Could not open PDF: {e}")
 
-    # Reuse verification logic
-    request = schemas.VerificationRequest(certificate_id=cert_id)
-    return verify_certificate(request, db)
+        # Extract cert ID from metadata (highest reliability)
+        cert_id = doc.metadata.get("subject") or doc.metadata.get("cert_id")
+        if cert_id:
+            print(f"DEBUG verify/pdf: Found ID in metadata: {cert_id}")
+
+        # Extract all text across all pages for fallback ID extraction
+        text = ""
+        for page in doc:
+            text += page.get_text()
+        doc.close()
+
+        print(f"DEBUG verify/pdf: Extracted text length={len(text)}, sample={text[:300]!r}")
+
+        # Fallback ID extraction patterns if not in metadata
+        if not cert_id:
+            # Pattern 1: Full UUID (most reliable)
+            match = re.search(
+                r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})",
+                text, re.IGNORECASE
+            )
+            if match:
+                cert_id = match.group(1).lower()
+                print(f"DEBUG verify/pdf: Found full UUID: {cert_id}")
+
+        # Pattern 2: "#XXXXXXXX" (8-char hex with hash)
+        if not cert_id:
+            match = re.search(r"#([0-9A-F]{8})\b", text, re.IGNORECASE)
+            if match:
+                cert_id = match.group(1).lower()
+                print(f"DEBUG verify/pdf: Found short ID with #: {cert_id}")
+
+        # Pattern 3: "ID: XXXXXXXX" or "ID:XXXXXXXX" or "cert_id: XXXXXXXX"
+        if not cert_id:
+            match = re.search(r"(?:cert[_-]?id|certificate[_\s]id|ID)\s*[:\-]\s*([0-9A-F]{8,36})", text, re.IGNORECASE)
+            if match:
+                cert_id = match.group(1).strip().lower()
+                print(f"DEBUG verify/pdf: Found labeled ID: {cert_id}")
+
+        # Pattern 4: Any standalone 8-char hex block (last resort)
+        if not cert_id:
+            match = re.search(r"\b([0-9A-F]{8})\b", text, re.IGNORECASE)
+            if match:
+                cert_id = match.group(1).lower()
+                print(f"DEBUG verify/pdf: Found bare 8-char hex: {cert_id}")
+
+        if not cert_id:
+            # Pattern 5: Raw binary scan as absolute last resort
+            try:
+                raw_text = content.decode("utf-8", errors="ignore")
+                raw_match = re.search(r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})", raw_text, re.IGNORECASE)
+                if raw_match:
+                    cert_id = raw_match.group(1).lower()
+                    print(f"DEBUG verify/pdf: Found ID via RAW binary scan: {cert_id}")
+            except:
+                pass
+
+        if not cert_id:
+            # Check if the PDF is actually empty (potentially a scanned image)
+            if len(text.strip()) < 10:
+                raise HTTPException(
+                    status_code=400, 
+                    detail="This PDF appears to be an image or scanned document. EduCerts digital certificates must be verifiable PDFs with a text layer or QR code."
+                )
+            
+            raise HTTPException(
+                status_code=400,
+                detail="Could not find a valid Certificate ID in this PDF. Please ensure you are uploading the original digital certificate file."
+            )
+
+        # ═══════════════════════════════════════════════════════════════════
+        # CRYPTOGRAPHIC CONTENT HASH VALIDATION
+        # ═══════════════════════════════════════════════════════════════════
+        
+        # Compute hash of uploaded PDF
+        try:
+            uploaded_hash = pdf_hash_utils.compute_pdf_content_hash(temp_path)
+            print(f"DEBUG verify/pdf: Computed uploaded PDF hash: {uploaded_hash[:8]}...")
+        except Exception as e:
+            print(f"WARNING verify/pdf: Failed to compute hash: {e}")
+            uploaded_hash = None
+
+        # Retrieve certificate from database
+        cert = db.query(models.Certificate).filter(models.Certificate.id == cert_id).first()
+        
+        # Handle short ID (prefix match)
+        if not cert and len(cert_id) == 8:
+            cert = db.query(models.Certificate).filter(models.Certificate.id.like(f"{cert_id}%")).first()
+        
+        if not cert:
+            raise HTTPException(status_code=404, detail="Certificate not found")
+
+        # Compare hashes for tamper detection
+        is_content_valid = None
+        content_integrity_status = "SKIPPED"
+        
+        if cert.content_hash and uploaded_hash:
+            # Both hashes available - perform comparison
+            is_content_valid = (uploaded_hash == cert.content_hash)
+            content_integrity_status = "VALID" if is_content_valid else "INVALID"
+            
+            if is_content_valid:
+                print(f"✓ Content hash verification PASSED for {cert_id}")
+            else:
+                print(f"✗ Content hash verification FAILED for {cert_id}")
+                print(f"  Expected: {cert.content_hash}")
+                print(f"  Computed: {uploaded_hash}")
+        elif not cert.content_hash:
+            # Legacy certificate without hash - skip check with warning
+            print(f"WARNING: Legacy certificate {cert_id} has no stored hash - skipping content integrity check")
+            content_integrity_status = "SKIPPED"
+        elif not uploaded_hash:
+            # Failed to compute hash - skip check
+            print(f"WARNING: Could not compute hash for uploaded PDF - skipping content integrity check")
+            content_integrity_status = "ERROR"
+
+        # Continue with existing verification logic
+        request = schemas.VerificationRequest(certificate_id=cert_id)
+        verification_result = verify_certificate(request, db)
+        
+        # Add content integrity check to response
+        verification_result["data"].insert(0, {
+            "type": "CONTENT_INTEGRITY",
+            "name": "PDFContentHash",
+            "data": {
+                "expected": cert.content_hash,
+                "computed": uploaded_hash,
+                "match": is_content_valid
+            },
+            "status": content_integrity_status
+        })
+        
+        # Update summary
+        verification_result["summary"]["contentIntegrity"] = is_content_valid if is_content_valid is not None else True
+        
+        # Update overall validity - content must be valid for certificate to be valid
+        if is_content_valid is False:
+            verification_result["summary"]["all"] = False
+        
+        return verification_result
+        
+    finally:
+        # Clean up temporary file
+        if os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except:
+                pass
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Certificate CRUD
@@ -1356,7 +1516,9 @@ async def apply_digital_signatures(
     stamp_path = sig_record.stamp_path if sig_record else None
 
     pdf_template_path = "user_templates/template.pdf"
+    html_template_path = "user_templates/custom_certificate.html"
     has_pdf_template = os.path.exists(pdf_template_path)
+    has_html_template = os.path.exists(html_template_path)
 
     os.makedirs("generated_certs", exist_ok=True)
     signed_certs = []
@@ -1370,9 +1532,13 @@ async def apply_digital_signatures(
         signed_pdf_path = f"generated_certs/{cert_id}_signed.pdf"
 
         if cert.template_type == "pdf" and has_pdf_template:
+            # Use PDF template for signing
             base_path = cert.rendered_pdf_path or pdf_template_path
             if not os.path.exists(base_path):
                 base_path = pdf_template_path
+            
+            print(f"DEBUG: Signing PDF certificate {cert_id} using template: {base_path}")
+            
             try:
                 pdf_utils.apply_signatures_to_pdf(
                     pdf_path=base_path,
@@ -1387,35 +1553,99 @@ async def apply_digital_signatures(
                     metadata={"cert_id": cert_id}
                 )
                 cert.rendered_pdf_path = signed_pdf_path
+                print(f"DEBUG: Successfully signed PDF certificate {cert_id}")
             except Exception as e:
-                print(f"Signing error for {cert_id}: {e}")
+                print(f"ERROR: Signing failed for {cert_id}: {e}")
                 continue
-        else:
-            # HTML-based cert — re-render with signature embedded
+        elif cert.template_type == "html" and has_html_template:
+            # Use HTML template for signing
+            print(f"DEBUG: Signing HTML certificate {cert_id} using HTML template")
+            
             verify_url = f"{FRONTEND_URL}/verify?id={cert.id}"
             qr_b64 = generate_qr_base64(verify_url)
-            html_template_path = "user_templates/custom_certificate.html"
-            if os.path.exists(html_template_path):
+            
+            try:
                 from jinja2 import FileSystemLoader, Environment
                 env = Environment(loader=FileSystemLoader("user_templates"))
                 tmpl = env.get_template("custom_certificate.html")
+                
+                render_ctx = {
+                    "student_name": cert.student_name,
+                    "course_name": cert.course_name,
+                    "issued_at": cert.issued_at.strftime("%Y-%m-%d") if cert.issued_at else datetime.datetime.now().strftime("%Y-%m-%d"),
+                    "cert_id": cert.id,
+                    "signature": cert.signature[:30] + "..." if cert.signature else "N/A",
+                    "qr_code": qr_b64,
+                }
+                html_content = tmpl.render(**render_ctx)
+                
+                # Convert HTML to PDF
+                result = BytesIO()
+                pisa.pisaDocument(BytesIO(html_content.encode("utf-8")), result)
+                with open(signed_pdf_path, "wb") as f:
+                    f.write(result.getvalue())
+                cert.rendered_pdf_path = signed_pdf_path
+                print(f"DEBUG: Successfully signed HTML certificate {cert_id}")
+            except Exception as e:
+                print(f"ERROR: HTML signing failed for {cert_id}: {e}")
+                continue
+        else:
+            # Fallback: try to use PDF template if available
+            if has_pdf_template:
+                print(f"DEBUG: Fallback - using PDF template for certificate {cert_id}")
+                try:
+                    # Generate PDF from template with certificate data
+                    verify_url = f"{FRONTEND_URL}/verify?id={cert.id}"
+                    qr_b64 = generate_qr_base64(verify_url)
+                    issued_at_str = cert.issued_at.strftime("%Y-%m-%d") if cert.issued_at else datetime.datetime.now().strftime("%Y-%m-%d")
+                    
+                    # Build field values for PDF template
+                    field_values = {
+                        "student_name": cert.student_name,
+                        "name": cert.student_name,
+                        "recipient": cert.student_name,
+                        "course_name": cert.course_name,
+                        "course": cert.course_name,
+                        "subject": cert.course_name,
+                        "issued_at": issued_at_str,
+                        "date": issued_at_str,
+                        "cert_id": cert.id,
+                        "id": cert.id,
+                        "id8": cert.id[:8],
+                        "signature": cert.signature[:20] + "..." if cert.signature else "N/A",
+                        "qr_code": qr_b64,
+                    }
+                    
+                    # First render the base PDF with data
+                    base_pdf_path = f"generated_certs/{cert_id}_base.pdf"
+                    pdf_utils.render_pdf_certificate(
+                        pdf_template_path, 
+                        field_values, 
+                        base_pdf_path,
+                        metadata={"cert_id": cert_id}
+                    )
+                    
+                    # Then apply signatures
+                    pdf_utils.apply_signatures_to_pdf(
+                        pdf_path=base_pdf_path,
+                        signature_img_path=sig_path,
+                        stamp_img_path=stamp_path,
+                        template_path=pdf_template_path,
+                        output_path=signed_pdf_path,
+                        signer_info={
+                            "name": signer_name,
+                            "role": signer_role
+                        },
+                        metadata={"cert_id": cert_id}
+                    )
+                    cert.rendered_pdf_path = signed_pdf_path
+                    print(f"DEBUG: Successfully signed certificate {cert_id} using fallback PDF method")
+                except Exception as e:
+                    print(f"ERROR: Fallback signing failed for {cert_id}: {e}")
+                    continue
             else:
-                tmpl = templates.get_template("certificate.html")
-
-            render_ctx = {
-                "student_name": cert.student_name,
-                "course_name": cert.course_name,
-                "issued_at": cert.issued_at.strftime("%Y-%m-%d"),
-                "cert_id": cert.id,
-                "signature": cert.signature[:30] + "...",
-                "qr_code": qr_b64,
-            }
-            html_content = tmpl.render(**render_ctx)
-            result = BytesIO()
-            pisa.pisaDocument(BytesIO(html_content.encode("utf-8")), result)
-            with open(signed_pdf_path, "wb") as f:
-                f.write(result.getvalue())
-            cert.rendered_pdf_path = signed_pdf_path
+                print(f"ERROR: No suitable template found for certificate {cert_id}")
+                continue
 
         # Update signing metadata
         existing_sigs = cert.digital_signatures or []
@@ -1430,6 +1660,43 @@ async def apply_digital_signatures(
         # UNIQUE PIN GENERATION ON SIGNING
         if not cert.claim_pin:
             cert.claim_pin = "".join([str(random.randint(0, 9)) for _ in range(6)])
+        
+        # ═══════════════════════════════════════════════════════════════════
+        # ADD INTERACTIVE VERIFICATION RIBBON
+        # ═══════════════════════════════════════════════════════════════════
+        try:
+            # Create verification result for ribbon
+            verification_request = schemas.VerificationRequest(certificate_id=cert.id)
+            verification_result = verify_certificate(verification_request, db)
+            
+            # Create interactive ribbon with verification data
+            ribbon_output_path = f"generated_certs/{cert_id}_signed_with_ribbon.pdf"
+            
+            # Use professional styling for signed certificates
+            ribbon_style = RibbonStyleManager.create_theme_style(
+                RibbonTheme.CLASSIC_BLUE, 
+                RibbonPosition.TOP_LEFT
+            )
+            
+            # Add interactive ribbon to the signed PDF
+            ribbon_success = pdf_ribbon_utils.add_interactive_ribbon_to_pdf(
+                pdf_path=signed_pdf_path,
+                output_path=ribbon_output_path,
+                cert=cert,
+                verification_result=verification_result,
+                styling=ribbon_style
+            )
+            
+            if ribbon_success:
+                # Update the certificate path to point to the ribbon-enhanced version
+                cert.rendered_pdf_path = ribbon_output_path
+                print(f"DEBUG: Successfully added interactive ribbon to certificate {cert_id}")
+            else:
+                print(f"WARNING: Failed to add interactive ribbon to certificate {cert_id}, using standard signed version")
+                
+        except Exception as ribbon_error:
+            print(f"WARNING: Interactive ribbon failed for {cert_id}: {ribbon_error}")
+            # Continue with standard signed certificate - graceful degradation
             
         signed_certs.append({"id": cert_id, "student_name": cert.student_name, "pin": cert.claim_pin})
 
@@ -1522,7 +1789,220 @@ def get_signature_records(
     ]
 
 
-@app.post("/api/import")
+@app.post("/api/certificates/{cert_id}/add-ribbon")
+async def add_ribbon_to_certificate(
+    cert_id: str,
+    ribbon_config: dict = None,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_admin)
+):
+    """
+    Add interactive verification ribbon to an existing certificate.
+    
+    Body: {
+        "theme": "classic_blue" | "emerald_green" | "ruby_red" | "gold_premium" | "slate_professional",
+        "position": "top_left" | "top_right" | "top_center" | "bottom_left" | "bottom_right" | "bottom_center",
+        "custom_colors": {
+            "primary": "#2563eb",
+            "accent": "#d4af37"
+        }
+    }
+    """
+    cert = db.query(models.Certificate).filter(models.Certificate.id == cert_id).first()
+    if not cert:
+        raise HTTPException(status_code=404, detail="Certificate not found")
+    
+    if not cert.rendered_pdf_path or not os.path.exists(cert.rendered_pdf_path):
+        raise HTTPException(status_code=400, detail="Certificate PDF not found")
+    
+    try:
+        # Parse ribbon configuration
+        config = ribbon_config or {}
+        theme_name = config.get("theme", "classic_blue")
+        position_name = config.get("position", "top_left")
+        
+        # Map theme and position
+        theme_map = {
+            "classic_blue": RibbonTheme.CLASSIC_BLUE,
+            "emerald_green": RibbonTheme.EMERALD_GREEN,
+            "ruby_red": RibbonTheme.RUBY_RED,
+            "gold_premium": RibbonTheme.GOLD_PREMIUM,
+            "slate_professional": RibbonTheme.SLATE_PROFESSIONAL
+        }
+        
+        position_map = {
+            "top_left": RibbonPosition.TOP_LEFT,
+            "top_right": RibbonPosition.TOP_RIGHT,
+            "top_center": RibbonPosition.TOP_CENTER,
+            "bottom_left": RibbonPosition.BOTTOM_LEFT,
+            "bottom_right": RibbonPosition.BOTTOM_RIGHT,
+            "bottom_center": RibbonPosition.BOTTOM_CENTER
+        }
+        
+        theme = theme_map.get(theme_name, RibbonTheme.CLASSIC_BLUE)
+        position = position_map.get(position_name, RibbonPosition.TOP_LEFT)
+        
+        # Create ribbon style
+        if "custom_colors" in config:
+            custom_colors = config["custom_colors"]
+            ribbon_style = RibbonStyleManager.create_custom_style(
+                primary_color=custom_colors.get("primary", "#2563eb"),
+                accent_color=custom_colors.get("accent", "#d4af37"),
+                position=position
+            )
+        else:
+            ribbon_style = RibbonStyleManager.create_theme_style(theme, position)
+        
+        # Create verification result
+        verification_request = schemas.VerificationRequest(certificate_id=cert_id)
+        verification_result = verify_certificate(verification_request, db)
+        
+        # Generate output path
+        ribbon_output_path = f"generated_certs/{cert_id}_ribbon_enhanced.pdf"
+        
+        # Add interactive ribbon
+        ribbon_success = pdf_ribbon_utils.add_interactive_ribbon_to_pdf(
+            pdf_path=cert.rendered_pdf_path,
+            output_path=ribbon_output_path,
+            cert=cert,
+            verification_result=verification_result,
+            styling=ribbon_style
+        )
+        
+        if ribbon_success:
+            # Update certificate path
+            cert.rendered_pdf_path = ribbon_output_path
+            db.commit()
+            
+            return {
+                "message": "Interactive ribbon added successfully",
+                "certificate_id": cert_id,
+                "ribbon_path": ribbon_output_path,
+                "theme": theme_name,
+                "position": position_name
+            }
+        else:
+            raise HTTPException(status_code=500, detail="Failed to add ribbon to certificate")
+            
+    except Exception as e:
+        print(f"ERROR: Failed to add ribbon to certificate {cert_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Ribbon addition failed: {str(e)}")
+
+
+@app.get("/api/certificates/{cert_id}/ribbon-preview")
+async def preview_certificate_ribbon(
+    cert_id: str,
+    theme: str = "classic_blue",
+    position: str = "top_left",
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_user)
+):
+    """
+    Generate a preview of how the ribbon would look on a certificate.
+    Returns ribbon configuration and styling information.
+    """
+    cert = db.query(models.Certificate).filter(models.Certificate.id == cert_id).first()
+    if not cert:
+        raise HTTPException(status_code=404, detail="Certificate not found")
+    
+    # Map theme and position
+    theme_map = {
+        "classic_blue": RibbonTheme.CLASSIC_BLUE,
+        "emerald_green": RibbonTheme.EMERALD_GREEN,
+        "ruby_red": RibbonTheme.RUBY_RED,
+        "gold_premium": RibbonTheme.GOLD_PREMIUM,
+        "slate_professional": RibbonTheme.SLATE_PROFESSIONAL
+    }
+    
+    position_map = {
+        "top_left": RibbonPosition.TOP_LEFT,
+        "top_right": RibbonPosition.TOP_RIGHT,
+        "top_center": RibbonPosition.TOP_CENTER,
+        "bottom_left": RibbonPosition.BOTTOM_LEFT,
+        "bottom_right": RibbonPosition.BOTTOM_RIGHT,
+        "bottom_center": RibbonPosition.BOTTOM_CENTER
+    }
+    
+    ribbon_theme = theme_map.get(theme, RibbonTheme.CLASSIC_BLUE)
+    ribbon_position = position_map.get(position, RibbonPosition.TOP_LEFT)
+    
+    # Create ribbon style
+    ribbon_style = RibbonStyleManager.create_theme_style(ribbon_theme, ribbon_position)
+    
+    # Create verification result for preview
+    verification_request = schemas.VerificationRequest(certificate_id=cert_id)
+    verification_result = verify_certificate(verification_request, db)
+    
+    # Create verification metadata
+    metadata = verification_metadata.create_verification_metadata_from_api_result(cert, verification_result)
+    
+    return {
+        "certificate_id": cert_id,
+        "ribbon_style": ribbon_style.to_dict(),
+        "verification_status": metadata.get_verification_status_text(),
+        "is_fully_verified": metadata.is_fully_verified(),
+        "preview_data": {
+            "theme": theme,
+            "position": position,
+            "colors": ribbon_style.colors.to_dict(),
+            "dimensions": ribbon_style.dimensions.to_dict()
+        }
+    }
+
+
+@app.post("/api/certificates/batch-add-ribbons")
+async def batch_add_ribbons_to_certificates(
+    body: dict,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_admin)
+):
+    """
+    Add ribbons to multiple certificates in batch.
+    
+    Body: {
+        "cert_ids": ["cert1", "cert2", ...],
+        "ribbon_config": {
+            "theme": "classic_blue",
+            "position": "top_left"
+        }
+    }
+    """
+    cert_ids = body.get("cert_ids", [])
+    ribbon_config = body.get("ribbon_config", {})
+    
+    if not cert_ids:
+        raise HTTPException(status_code=400, detail="No certificate IDs provided")
+    
+    results = []
+    
+    for cert_id in cert_ids:
+        try:
+            # Use the single certificate ribbon endpoint
+            result = await add_ribbon_to_certificate(cert_id, ribbon_config, db, current_user)
+            results.append({
+                "certificate_id": cert_id,
+                "status": "success",
+                "message": result["message"]
+            })
+        except Exception as e:
+            results.append({
+                "certificate_id": cert_id,
+                "status": "error",
+                "message": str(e)
+            })
+    
+    successful = len([r for r in results if r["status"] == "success"])
+    
+    return {
+        "message": f"Processed {len(cert_ids)} certificates, {successful} successful",
+        "results": results,
+        "total_processed": len(cert_ids),
+        "successful": successful,
+        "failed": len(cert_ids) - successful
+    }
+
+
+@app.get("/api/import")
 async def import_data(file: UploadFile = File(...)):
     if not file.filename.endswith('.csv'):
         raise HTTPException(status_code=400, detail="Only CSV files are allowed")

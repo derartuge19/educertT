@@ -38,6 +38,9 @@ class Certificate(Base):
     signing_status = Column(String(20), default="unsigned")  # "unsigned" | "signed"
     digital_signatures = Column(JSON, nullable=True)  # list of {signer_name, role, applied_at}
 
+    # ── Content Hash for tamper detection ──
+    content_hash = Column(String(64), nullable=True, index=True)  # SHA-256 hash of PDF content
+
     student = relationship("User", back_populates="certificates")
     batch = relationship("DocumentRegistry", back_populates="certificates")
 

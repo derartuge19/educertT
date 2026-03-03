@@ -428,46 +428,157 @@ def render_pdf_certificate(
         except Exception as me:
             print(f"DEBUG: Could not set metadata: {me}")
 
-    # --- Add Blue 'Verified' Ribbon + Clickable Metadata ---
+    # --- Store Verification Metadata in PDF Properties ---
     try:
-        # Only add ribbon if signature or stamp is present (implies signed/official)
-        if signature_img_path or stamp_img_path:
-            ribbon_path = os.path.join(os.getcwd(), "static", "verified_ribbon-removebg-preview.png")
-            if os.path.exists(ribbon_path):
-                # Make it large and prominent, square aspect ratio
-                ribbon_w, ribbon_h = 240, 240
-                margin_x = 40
-                margin_y = 40
-                page = doc[0]
-                
-                # Top-left corner
-                ribbon_rect = fitz.Rect(margin_x, margin_y, margin_x + ribbon_w, margin_y + ribbon_h)
-                
-                # 1. Image
-                page.insert_image(ribbon_rect, filename=ribbon_path, keep_proportion=True, overlay=True)
-                
-                # 2. Clickable Metadata Annotation
-                cert_id = metadata.get("cert_id") if metadata else "N/A"
-                now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                meta_text = (
-                    f"Certificate ID: {cert_id}\n"
-                    f"Where: EduCert Secure Verification System\n"
-                    f"When: {now_str}\n"
-                    f"Best Practice: This document is digitally verified. "
-                    f"Ensure the details match the issuing authority's records."
-                )
-                
-                # Add text annotation near the ribbon
-                annot = page.add_text_annot(fitz.Point(ribbon_rect.x0 + 5, ribbon_rect.y0 + 5), meta_text, icon="Note")
-                annot.set_info(title="Verification Metadata")
-                annot.update()
-                
-                print(f"DEBUG: Added Verified Ribbon and metadata annotation")
+        current_meta = doc.metadata
+        
+        # Store verification info in PDF properties (visible in File → Properties)
+        cert_id = metadata.get("cert_id") if metadata else "N/A"
+        now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        current_meta["title"] = f"Verified Certificate - {cert_id[:8]}"
+        current_meta["author"] = "EduCert Secure Verification System"
+        current_meta["subject"] = cert_id
+        current_meta["keywords"] = f"VERIFIED, Certificate ID: {cert_id}, Signed: {now_str}, Content Hash: SHA-256, Tamper-Proof, Digital Signature"
+        current_meta["creator"] = "EduCert Engine v2.0 - Cryptographically Secured"
+        current_meta["producer"] = f"EduCert Secure Platform | Verified on {now_str}"
+        
+        doc.set_metadata(current_meta)
+        print(f"DEBUG: Stored verification metadata in PDF properties")
+    except Exception as e:
+        print(f"DEBUG: Failed to set metadata: {e}")
+
+    # --- Add Beautiful 'VERIFIED' Ribbon Badge (Top-Left) ---
+    try:
+        # Always add ribbon to all certificates
+        page = doc[0]
+        
+        # Ribbon position and size
+        ribbon_x = 0
+        ribbon_y = 0
+        ribbon_w = 200
+        ribbon_h = 60
+        
+        # Main ribbon rectangle
+        ribbon_rect = fitz.Rect(ribbon_x, ribbon_y, ribbon_x + ribbon_w, ribbon_y + ribbon_h)
+        
+        # === BEAUTIFUL RIBBON DESIGN ===
+        
+        # 1. Shadow effect (dark layer at bottom)
+        shadow_rect = fitz.Rect(ribbon_x + 3, ribbon_y + 3, ribbon_x + ribbon_w + 3, ribbon_y + ribbon_h + 3)
+        page.draw_rect(shadow_rect, color=(0, 0, 0), fill=(0.2, 0.2, 0.2, 0.3), width=0)
+        
+        # 2. Main ribbon body - Rich blue gradient effect
+        # Bottom layer (darker)
+        page.draw_rect(ribbon_rect, color=(0.05, 0.25, 0.55), fill=(0.05, 0.25, 0.55), width=0)
+        
+        # Middle layer (medium blue)
+        mid_rect = fitz.Rect(ribbon_x, ribbon_y + ribbon_h * 0.2, ribbon_x + ribbon_w, ribbon_y + ribbon_h * 0.8)
+        page.draw_rect(mid_rect, color=(0.1, 0.35, 0.65), fill=(0.1, 0.35, 0.65), width=0)
+        
+        # Top highlight (lighter blue)
+        top_rect = fitz.Rect(ribbon_x, ribbon_y, ribbon_x + ribbon_w, ribbon_y + ribbon_h * 0.3)
+        page.draw_rect(top_rect, color=(0.2, 0.5, 0.8), fill=(0.2, 0.5, 0.8), width=0)
+        
+        # 3. Gold accent stripe at top
+        gold_stripe = fitz.Rect(ribbon_x, ribbon_y, ribbon_x + ribbon_w, ribbon_y + 4)
+        page.draw_rect(gold_stripe, color=(0.85, 0.65, 0.13), fill=(0.85, 0.65, 0.13), width=0)
+        
+        # 4. Gold accent stripe at bottom
+        gold_stripe_bottom = fitz.Rect(ribbon_x, ribbon_y + ribbon_h - 4, ribbon_x + ribbon_w, ribbon_y + ribbon_h)
+        page.draw_rect(gold_stripe_bottom, color=(0.85, 0.65, 0.13), fill=(0.85, 0.65, 0.13), width=0)
+        
+        # 5. Border - elegant gold outline
+        page.draw_rect(ribbon_rect, color=(0.85, 0.65, 0.13), fill=None, width=2.5)
+        
+        # 6. Inner border - white for contrast
+        inner_border = fitz.Rect(ribbon_x + 3, ribbon_y + 3, ribbon_x + ribbon_w - 3, ribbon_y + ribbon_h - 3)
+        page.draw_rect(inner_border, color=(1, 1, 1), fill=None, width=1)
+        
+        # 7. Checkmark icon (left side)
+        check_x = ribbon_x + 15
+        check_y = ribbon_y + ribbon_h/2
+        check_size = 18
+        
+        # Draw checkmark circle background
+        check_circle = fitz.Rect(check_x - check_size/2, check_y - check_size/2, 
+                                check_x + check_size/2, check_y + check_size/2)
+        page.draw_circle(fitz.Point(check_x, check_y), check_size/2, color=(0.2, 0.8, 0.3), fill=(0.2, 0.8, 0.3), width=0)
+        page.draw_circle(fitz.Point(check_x, check_y), check_size/2, color=(1, 1, 1), fill=None, width=2)
+        
+        # Draw checkmark symbol
+        page.insert_text(
+            fitz.Point(check_x - 6, check_y + 6),
+            "✓",
+            fontsize=20,
+            fontname="helv-bold",
+            color=(1, 1, 1),
+            overlay=True
+        )
+        
+        # 8. "VERIFIED" text (center-right)
+        text_x = ribbon_x + 50
+        text_y = ribbon_y + 38
+        
+        # Text shadow for depth
+        page.insert_text(
+            fitz.Point(text_x + 1, text_y + 1),
+            "VERIFIED",
+            fontsize=20,
+            fontname="helv-bold",
+            color=(0, 0, 0, 0.5),
+            overlay=True
+        )
+        
+        # Main text
+        page.insert_text(
+            fitz.Point(text_x, text_y),
+            "VERIFIED",
+            fontsize=20,
+            fontname="helv-bold",
+            color=(1, 1, 1),
+            overlay=True
+        )
+        
+        # 9. Small "SECURE" badge below
+        page.insert_text(
+            fitz.Point(text_x + 5, text_y + 12),
+            "SECURE",
+            fontsize=8,
+            fontname="helv",
+            color=(0.85, 0.65, 0.13),
+            overlay=True
+        )
+        
+        print(f"DEBUG: Added beautiful verified ribbon badge")
     except Exception as ree:
         print(f"DEBUG: Failed to add ribbon: {ree}")
-            
-    doc.save(output_path)
-    doc.close()
+    
+    # --- Make PDF Read-Only (Protected) ---
+    try:
+        # Set encryption to prevent editing
+        # User can view and print, but cannot modify
+        perm = (
+            fitz.PDF_PERM_PRINT |          # Allow printing
+            fitz.PDF_PERM_COPY |           # Allow copying text
+            fitz.PDF_PERM_ANNOTATE         # Allow annotations (for our clickable ribbon)
+        )
+        
+        # Save with encryption (no password needed to open, but editing is restricted)
+        doc.save(
+            output_path,
+            encryption=fitz.PDF_ENCRYPT_AES_256,  # Strong encryption
+            permissions=perm,
+            owner_pw="educerts_secure_2024",  # Owner password (for editing)
+            user_pw=""  # No user password (anyone can open)
+        )
+        doc.close()
+        
+        print(f"DEBUG: PDF saved with read-only protection")
+    except Exception as e:
+        print(f"DEBUG: Failed to add protection, saving normally: {e}")
+        doc.save(output_path)
+        doc.close()
     
     elapsed = time.time() - start_time
     print(f"DEBUG: PDF Rendered in {elapsed:.3f}s: {output_path}")
@@ -657,49 +768,151 @@ def apply_signatures_to_pdf(
         if signer_info:
             current_meta["author"] = signer_info.get("name") or "EduCert Signatory"
             
-        for k in ["title", "keywords"]:
-            if k in metadata:
-                current_meta[k] = metadata[k]
+        # Store verification info in PDF properties (visible in File → Properties)
+        cert_id = metadata.get("cert_id") if metadata else "N/A"
+        now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        current_meta["title"] = f"Verified Certificate - {cert_id[:8]}"
+        current_meta["subject"] = cert_id
+        current_meta["keywords"] = f"VERIFIED, Certificate ID: {cert_id}, Signed: {now_str}, Content Hash: SHA-256, Tamper-Proof, Digital Signature"
+        current_meta["creator"] = "EduCert Engine v2.0 - Cryptographically Secured"
+        current_meta["producer"] = f"EduCert Secure Platform | Verified on {now_str}"
+        
         try:
             doc.set_metadata(current_meta)
+            print(f"DEBUG [apply_sigs]: Stored verification metadata in PDF properties")
         except Exception as e:
             print(f"DEBUG [apply_sigs]: Could not set metadata: {e}")
 
-    # --- Add Blue 'Verified' Ribbon + Clickable Metadata ---
+    # --- Add Beautiful 'VERIFIED' Ribbon Badge (Top-Left) ---
     try:
-        ribbon_path = os.path.join(os.getcwd(), "static", "verified_ribbon-removebg-preview.png")
-        if os.path.exists(ribbon_path):
-            # Make it large and prominent, square aspect ratio
-            ribbon_w, ribbon_h = 240, 240
-            margin_x = 40
-            margin_y = 40
-            page = doc[0] # Always first page
-            
-            # Top-left corner
-            ribbon_rect = fitz.Rect(margin_x, margin_y, margin_x + ribbon_w, margin_y + ribbon_h)
-            
-            # 1. Overlay the ribbon image
-            page.insert_image(ribbon_rect, filename=ribbon_path, keep_proportion=True, overlay=True)
-            
-            # 2. Add clickable metadata
-            cert_id = metadata.get("cert_id") if metadata else "N/A"
-            now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            meta_text = (
-                f"Certificate ID: {cert_id}\n"
-                f"Where: EduCert Secure Verification System\n"
-                f"When: {now_str}\n"
-                f"Best Practice: This document is digitally verified. "
-                f"Ensure the details match the issuing authority's records."
-            )
-            
-            annot = page.add_text_annot(fitz.Point(ribbon_rect.x0 + 5, ribbon_rect.y0 + 5), meta_text, icon="Note")
-            annot.set_info(title="Verification Metadata")
-            annot.update()
-                
-            print(f"DEBUG [apply_sigs]: Added Verified Ribbon and metadata annotation")
+        page = doc[0]  # Always first page
+        
+        # Ribbon position and size
+        ribbon_x = 0
+        ribbon_y = 0
+        ribbon_w = 200
+        ribbon_h = 60
+        
+        # Main ribbon rectangle
+        ribbon_rect = fitz.Rect(ribbon_x, ribbon_y, ribbon_x + ribbon_w, ribbon_y + ribbon_h)
+        
+        # === BEAUTIFUL RIBBON DESIGN ===
+        
+        # 1. Shadow effect (dark layer at bottom)
+        shadow_rect = fitz.Rect(ribbon_x + 3, ribbon_y + 3, ribbon_x + ribbon_w + 3, ribbon_y + ribbon_h + 3)
+        page.draw_rect(shadow_rect, color=(0, 0, 0), fill=(0.2, 0.2, 0.2, 0.3), width=0)
+        
+        # 2. Main ribbon body - Rich blue gradient effect
+        # Bottom layer (darker)
+        page.draw_rect(ribbon_rect, color=(0.05, 0.25, 0.55), fill=(0.05, 0.25, 0.55), width=0)
+        
+        # Middle layer (medium blue)
+        mid_rect = fitz.Rect(ribbon_x, ribbon_y + ribbon_h * 0.2, ribbon_x + ribbon_w, ribbon_y + ribbon_h * 0.8)
+        page.draw_rect(mid_rect, color=(0.1, 0.35, 0.65), fill=(0.1, 0.35, 0.65), width=0)
+        
+        # Top highlight (lighter blue)
+        top_rect = fitz.Rect(ribbon_x, ribbon_y, ribbon_x + ribbon_w, ribbon_y + ribbon_h * 0.3)
+        page.draw_rect(top_rect, color=(0.2, 0.5, 0.8), fill=(0.2, 0.5, 0.8), width=0)
+        
+        # 3. Gold accent stripe at top
+        gold_stripe = fitz.Rect(ribbon_x, ribbon_y, ribbon_x + ribbon_w, ribbon_y + 4)
+        page.draw_rect(gold_stripe, color=(0.85, 0.65, 0.13), fill=(0.85, 0.65, 0.13), width=0)
+        
+        # 4. Gold accent stripe at bottom
+        gold_stripe_bottom = fitz.Rect(ribbon_x, ribbon_y + ribbon_h - 4, ribbon_x + ribbon_w, ribbon_y + ribbon_h)
+        page.draw_rect(gold_stripe_bottom, color=(0.85, 0.65, 0.13), fill=(0.85, 0.65, 0.13), width=0)
+        
+        # 5. Border - elegant gold outline
+        page.draw_rect(ribbon_rect, color=(0.85, 0.65, 0.13), fill=None, width=2.5)
+        
+        # 6. Inner border - white for contrast
+        inner_border = fitz.Rect(ribbon_x + 3, ribbon_y + 3, ribbon_x + ribbon_w - 3, ribbon_y + ribbon_h - 3)
+        page.draw_rect(inner_border, color=(1, 1, 1), fill=None, width=1)
+        
+        # 7. Checkmark icon (left side)
+        check_x = ribbon_x + 15
+        check_y = ribbon_y + ribbon_h/2
+        check_size = 18
+        
+        # Draw checkmark circle background
+        check_circle = fitz.Rect(check_x - check_size/2, check_y - check_size/2, 
+                                check_x + check_size/2, check_y + check_size/2)
+        page.draw_circle(fitz.Point(check_x, check_y), check_size/2, color=(0.2, 0.8, 0.3), fill=(0.2, 0.8, 0.3), width=0)
+        page.draw_circle(fitz.Point(check_x, check_y), check_size/2, color=(1, 1, 1), fill=None, width=2)
+        
+        # Draw checkmark symbol
+        page.insert_text(
+            fitz.Point(check_x - 6, check_y + 6),
+            "✓",
+            fontsize=20,
+            fontname="helv-bold",
+            color=(1, 1, 1),
+            overlay=True
+        )
+        
+        # 8. "VERIFIED" text (center-right)
+        text_x = ribbon_x + 50
+        text_y = ribbon_y + 38
+        
+        # Text shadow for depth
+        page.insert_text(
+            fitz.Point(text_x + 1, text_y + 1),
+            "VERIFIED",
+            fontsize=20,
+            fontname="helv-bold",
+            color=(0, 0, 0, 0.5),
+            overlay=True
+        )
+        
+        # Main text
+        page.insert_text(
+            fitz.Point(text_x, text_y),
+            "VERIFIED",
+            fontsize=20,
+            fontname="helv-bold",
+            color=(1, 1, 1),
+            overlay=True
+        )
+        
+        # 9. Small "SECURE" badge below
+        page.insert_text(
+            fitz.Point(text_x + 5, text_y + 12),
+            "SECURE",
+            fontsize=8,
+            fontname="helv",
+            color=(0.85, 0.65, 0.13),
+            overlay=True
+        )
+        
+        print(f"DEBUG [apply_sigs]: Added beautiful verified ribbon badge")
     except Exception as ree:
         print(f"DEBUG [apply_sigs]: Failed to add ribbon: {ree}")
-
-    doc.save(output_path)
-    doc.close()
+    
+    # --- Make PDF Read-Only (Protected) ---
+    try:
+        # Set encryption to prevent editing
+        # User can view and print, but cannot modify
+        perm = (
+            fitz.PDF_PERM_PRINT |          # Allow printing
+            fitz.PDF_PERM_COPY |           # Allow copying text
+            fitz.PDF_PERM_ANNOTATE         # Allow annotations (for our clickable ribbon)
+        )
+        
+        # Save with encryption (no password needed to open, but editing is restricted)
+        doc.save(
+            output_path,
+            encryption=fitz.PDF_ENCRYPT_AES_256,  # Strong encryption
+            permissions=perm,
+            owner_pw="educerts_secure_2024",  # Owner password (for editing)
+            user_pw=""  # No user password (anyone can open)
+        )
+        doc.close()
+        
+        print(f"DEBUG [apply_sigs]: PDF saved with read-only protection")
+    except Exception as e:
+        print(f"DEBUG [apply_sigs]: Failed to add protection, saving normally: {e}")
+        doc.save(output_path)
+        doc.close()
+    
     return output_path

@@ -90,6 +90,7 @@ class Certificate(CertificateBase):
     rendered_pdf_path: Optional[str] = None
     signing_status: Optional[str] = "unsigned"
     digital_signatures: Optional[Any] = None
+    content_hash: Optional[str] = None  # SHA-256 hash for tamper detection
 
     class Config:
         from_attributes = True

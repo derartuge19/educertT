@@ -7,7 +7,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Use PostgreSQL from environment variable, fallback to SQLite for local dev
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./educerts_fallback.db")
+import os
+db_path = os.path.join(os.path.dirname(__file__), "educerts.db")
+DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{db_path}")
 
 # psycopg2 driver for PostgreSQL
 connect_args = {}
