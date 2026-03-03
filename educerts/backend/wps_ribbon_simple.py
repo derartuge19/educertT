@@ -46,12 +46,15 @@ class SimpleWPSRibbon:
             click_point = fitz.Point(page_width - 200, 22)
             page.insert_text(click_point, click_text, fontsize=9, color=self.text_color)
             
-            # Make entire ribbon clickable to open PDF Properties
+            # Make entire ribbon clickable to show signature metadata
             link_rect = fitz.Rect(0, 0, page_width, self.ribbon_height)
+            
+            # Create a simple JavaScript alert that works in all PDF viewers
+            metadata_js = self._get_signature_metadata_javascript(cert_data)
             link = {
                 "kind": fitz.LINK_URI,
                 "from": link_rect,
-                "uri": "javascript:this.execMenuItem('ShowProperties');"
+                "uri": f"javascript:{metadata_js}"
             }
             page.insert_link(link)
             
