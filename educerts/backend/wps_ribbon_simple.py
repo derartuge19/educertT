@@ -36,7 +36,7 @@ class SimpleWPSRibbon:
             # Add verification text
             main_text = "✓ CERTIFICATE VERIFIED - EduCerts"
             main_point = fitz.Point(15, 22)
-            page.insert_text(main_text, main_text, fontsize=10, color=self.text_color)
+            page.insert_text(main_point, main_text, fontsize=10, color=self.text_color)
             
             # Add click instruction
             click_text = "Click for verification details ›"
