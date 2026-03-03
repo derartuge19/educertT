@@ -13,11 +13,11 @@ class SimpleWPSRibbon:
     def __init__(self):
         # WPS-style colors and dimensions
         self.ribbon_height = 35
-        self.ribbon_color = (0.1, 0.4, 0.8)  # Professional blue #1A66CC
+        self.ribbon_color = (0.53, 0.81, 0.92)  # Sky blue #87CEEB
         self.text_color = (1, 1, 1)  # White text
         
     def add_wps_ribbon(self, pdf_path, output_path, cert_data):
-        """Add WPS-style ribbon to PDF"""
+        """Add WPS-style ribbon to PDF as overlay (shifts content down)"""
         
         doc = fitz.open(pdf_path)
         
@@ -27,7 +27,21 @@ class SimpleWPSRibbon:
             page_rect = page.rect
             page_width = page_rect.width
             
-            # Create ribbon area at the very top
+            # SHIFT ALL CONTENT DOWN to make room for ribbon
+            # Create a new page with ribbon space at top
+            new_page_rect = fitz.Rect(0, 0, page_width, page_rect.height + self.ribbon_height)
+            new_page = doc.new_page(-1, width=page_width, height=page_rect.height + self.ribbon_height)
+            
+            # Copy original content to new position (shifted down)
+            page.show_pdf_page(new_page, fitz.Rect(0, self.ribbon_height, page_width, page_rect.height + self.ribbon_height))
+            
+            # Remove the original page
+            doc.delete_page(page)
+            
+            # Now work with the new page that has space at top
+            page = new_page
+            
+            # Create ribbon area at the very top (now has space)
             ribbon_rect = fitz.Rect(0, 0, page_width, self.ribbon_height)
             
             # Draw main ribbon background
@@ -43,23 +57,21 @@ class SimpleWPSRibbon:
             click_point = fitz.Point(page_width - 200, 22)
             page.insert_text(click_point, click_text, fontsize=9, color=self.text_color)
             
-            # Make ribbon clickable
+            # Make ribbon clickable with real verification URL
+            verify_url = f"https://educerts.verif.app/verify?id={cert_data.get('id', 'unknown')}"
             link_rect = fitz.Rect(0, 0, page_width, self.ribbon_height)
             link = {
                 "kind": fitz.LINK_URI,
                 "from": link_rect,
-                "uri": f"https://educerts.io/verify?id={cert_data.get('id', '')}"
+                "uri": verify_url
             }
             page.insert_link(link)
             
-            # Add JavaScript
-            self._add_javascript(doc, cert_data)
+            print(f"✅ Added sky blue WPS ribbon with real verification link: {verify_url}")
         
-        # Save the enhanced PDF
-        doc.save(output_path, garbage=4, deflate=True)
+        # Save with ribbon overlay
+        doc.save(output_path)
         doc.close()
-        
-        print(f"✅ WPS ribbon added to: {output_path}")
         return output_path
     
     def _add_javascript(self, doc, cert_data):
