@@ -42,11 +42,18 @@ class SimpleWPSRibbon:
             page.insert_text(main_point, main_text, fontsize=10, color=self.text_color)
             
             # Add click instruction
-            click_text = "Signature metadata in PDF properties ›"
+            click_text = "Click for verification details ›"
             click_point = fitz.Point(page_width - 200, 22)
             page.insert_text(click_point, click_text, fontsize=9, color=self.text_color)
             
-            # Note: Signature metadata is in PDF properties (right-click → Properties)
+            # Make entire ribbon clickable to open PDF Properties
+            link_rect = fitz.Rect(0, 0, page_width, self.ribbon_height)
+            link = {
+                "kind": fitz.LINK_URI,
+                "from": link_rect,
+                "uri": "javascript:this.execMenuItem('ShowProperties');"
+            }
+            page.insert_link(link)
             
             # Add metadata to PDF properties instead of separate page
             self._add_metadata_to_properties(doc, cert_data)
