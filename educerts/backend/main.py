@@ -24,7 +24,7 @@ import models, schemas, crypto_utils, database, auth_utils, oa_logic
 import pdf_utils
 import pdf_hash_utils
 from wps_ribbon_simple import add_simple_wps_ribbon
-# DISABLED: Remove unused ribbon imports to avoid errors
+# DISABLED: Remove other ribbon imports - keep only WPS ribbon
 # import pdf_ribbon_utils
 # import verification_metadata
 # import pdf_javascript_templates
@@ -1679,6 +1679,7 @@ async def apply_digital_signatures(
                     'signature': cert.signature
                 }
                 
+                # KEEP WPS RIBBON - REMOVE OTHER RIBBONS
                 # Create WPS-style enhanced PDF with interactive ribbon
                 wps_enhanced_pdf_path = f"generated_certs/{cert_id}_wps_verified.pdf"
                 add_simple_wps_ribbon(
