@@ -822,6 +822,9 @@ def bulk_revoke_certificates(request: schemas.BulkActionRequest, db: Session = D
 
 @app.post("/api/certificates/bulk-delete")
 def bulk_delete_certificates(request: schemas.BulkActionRequest, db: Session = Depends(get_db), current_user: models.User = Depends(require_admin)):
+    print(f"DEBUG BULK DELETE: User {current_user.name} (admin: {current_user.is_admin}) attempting to delete {len(request.cert_ids)} certificates")
+    print(f"DEBUG BULK DELETE: Certificate IDs: {request.cert_ids}")
+    
     certs = db.query(models.Certificate).filter(models.Certificate.id.in_(request.cert_ids)).all()
     count = 0
     for cert in certs:
@@ -833,7 +836,10 @@ def bulk_delete_certificates(request: schemas.BulkActionRequest, db: Session = D
         db.delete(cert)
         count += 1
     db.commit()
-    return {"message": f"Successfully deleted {count} document(s)"}
+    
+    result = {"message": f"Successfully deleted {count} document(s)"}
+    print(f"DEBUG BULK DELETE: Result: {result}")
+    return result
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Document Registry API
