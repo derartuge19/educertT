@@ -15,64 +15,69 @@ from datetime import datetime
 from verification_metadata import VerificationMetadata
 from ribbon_styling import RibbonStyle
 from pdf_javascript_templates import JavaScriptTemplates
-from ribbon_error_handling import RibbonErrorHandler
+from ribbon_error_handling import RibbonError, RibbonErrorHandler
+
+
+@dataclass
+class RibbonPosition:
+    """Defines the position and dimensions of the verification ribbon"""
+    x: float = 0
+    y: float = 0
+    width: float = 595  # A4 width in points
+    height: float = 30
+    page: int = 0  # First page
 
 
 class VerificationRibbon:
     """
-    Main class for embedding interactive verification ribbons into PDF certificates.
+    Main class for creating and embedding interactive verification ribbons in PDFs
     """
     
     def __init__(self, verification_data: VerificationMetadata, styling: Optional[RibbonStyle] = None):
         """
-        Initialize the verification ribbon with metadata and styling.
+        Initialize the verification ribbon
         
         Args:
-            verification_data: Structured verification information
-            styling: Optional custom styling configuration
+            verification_data: Structured verification metadata
+            styling: Optional custom styling, defaults to blue verified style
         """
         self.verification_data = verification_data
         self.styling = styling or RibbonStyle()
-        self.error_handler = RibbonErrorHandler()
-        self.js_templates = JavaScriptTemplates()
-    
+        
     def embed_ribbon(self, pdf_path: str, output_path: str) -> bool:
         """
-        Embeds interactive verification ribbon into PDF certificate.
+        Embeds interactive verification ribbon into PDF
         
         Args:
             pdf_path: Path to input PDF file
             output_path: Path for output PDF with ribbon
             
         Returns:
-            bool: True if ribbon was successfully embedded, False otherwise
+            bool: True if successful, False otherwise
         """
         try:
             # Open the PDF document
             doc = fitz.open(pdf_path)
             
             if len(doc) == 0:
-                print("ERROR: PDF has no pages")
-                return False
+                raise RibbonError("PDF document has no pages")
             
             # Get the first page for ribbon placement
             page = doc[0]
-            page_rect = page.rect
             
-            # Calculate ribbon position and dimensions
-            ribbon_rect = self._calculate_ribbon_position(page_rect)
+            # Calculate ribbon position to avoid content overlap
+            ribbon_pos = self._calculate_ribbon_position(page)
             
             # Create the ribbon annotation
-            ribbon_annotation = self._create_ribbon_annotation(page, ribbon_rect)
+            self._create_ribbon_annotation(page, ribbon_pos)
             
             # Embed verification metadata
-            self._embed_verification_metadata(doc, self.verification_data)
+            self._embed_verification_metadata(doc)
             
-            # Add interactive JavaScript if supported
-            if self.styling.enable_javascript:
-                self._add_interactive_javascript(doc, ribbon_annotation)
+            # Add interactive JavaScript
+            self._add_interactive_javascript(doc)
             
-            # Save the modified PDF
+            # Save the enhanced PDF
             doc.save(output_path, garbage=4, deflate=True)
             doc.close()
             
@@ -80,256 +85,262 @@ class VerificationRibbon:
             return True
             
         except Exception as e:
-            return self.error_handler.handle_embedding_error(e, pdf_path, output_path)
+            error_handler = RibbonErrorHandler()
+            return error_handler.handle_embedding_error(e, pdf_path, output_path)
     
-    def _calculate_ribbon_position(self, page_rect: fitz.Rect) -> fitz.Rect:
+    def _calculate_ribbon_position(self, page: fitz.Page) -> RibbonPosition:
         """
-        Calculate the position and size of the verification ribbon.
-        
-        Args:
-            page_rect: Rectangle representing the page dimensions
-            
-        Returns:
-            fitz.Rect: Rectangle for ribbon placement
-        """
-        # Position ribbon at the top of the page with some margin
-        margin = 10
-        ribbon_height = self.styling.height
-        
-        ribbon_rect = fitz.Rect(
-            margin,  # left
-            margin,  # top
-            page_rect.width - margin,  # right
-            margin + ribbon_height  # bottom
-        )
-        
-        return ribbon_rect
-    
-    def _create_ribbon_annotation(self, page: fitz.Page, ribbon_rect: fitz.Rect) -> fitz.Annot:
-        """
-        Create the visual ribbon annotation on the PDF page.
+        Calculate optimal ribbon position to avoid content overlap
         
         Args:
             page: PDF page object
-            ribbon_rect: Rectangle for ribbon placement
             
         Returns:
-            fitz.Annot: The created ribbon annotation
+            RibbonPosition: Calculated position and dimensions
         """
-        # Create a widget annotation (button-like)
-        annot = page.add_widget(
-            fitz.PDF_WIDGET_TYPE_BUTTON,
-            ribbon_rect
+        page_rect = page.rect
+        
+        # Position ribbon at the very top of the page
+        ribbon_pos = RibbonPosition(
+            x=0,
+            y=page_rect.height - self.styling.height,  # Top of page
+            width=page_rect.width,
+            height=self.styling.height,
+            page=0
         )
         
-        # Set ribbon appearance
-        annot.set_colors(
-            stroke=fitz.utils.getColor(self.styling.border_color),
-            fill=fitz.utils.getColor(self.styling.background_color)
-        )
+        # Check for existing content in ribbon area
+        text_blocks = page.get_text("blocks")
+        for block in text_blocks:
+            block_rect = fitz.Rect(block[:4])
+            ribbon_rect = fitz.Rect(ribbon_pos.x, ribbon_pos.y, 
+                                  ribbon_pos.x + ribbon_pos.width, 
+                                  ribbon_pos.y + ribbon_pos.height)
+            
+            # If content overlaps, adjust ribbon position
+            if block_rect.intersects(ribbon_rect):
+                # Move ribbon slightly down to avoid overlap
+                ribbon_pos.y = max(0, ribbon_pos.y - 5)
+                break
         
-        # Set ribbon text
-        status_text = "🔒 VERIFIED" if self.verification_data.is_verified else "⚠️ UNVERIFIED"
-        annot.set_info(
-            title="EduCerts Verification",
-            content=f"{status_text} - Click for details"
-        )
-        
-        # Configure appearance
-        annot.set_border(width=1, style="solid")
-        annot.set_flags(fitz.PDF_ANNOT_XF_PRINT)  # Make it printable
-        
-        # Add custom appearance stream for better styling
-        self._customize_ribbon_appearance(annot, ribbon_rect, status_text)
-        
-        annot.update()
-        return annot
+        return ribbon_pos
     
-    def _customize_ribbon_appearance(self, annot: fitz.Annot, rect: fitz.Rect, text: str):
+    def _create_ribbon_annotation(self, page: fitz.Page, position: RibbonPosition):
         """
-        Customize the visual appearance of the ribbon annotation.
+        Create the visual ribbon annotation
         
         Args:
-            annot: The annotation to customize
-            rect: Rectangle dimensions
-            text: Text to display on ribbon
+            page: PDF page object
+            position: Ribbon position and dimensions
         """
-        # Create custom appearance stream
-        ap_stream = f"""
-        q
-        {self.styling.background_color_rgb} rg
-        {rect.x0} {rect.y0} {rect.width} {rect.height} re
-        f
+        # Create rectangle for ribbon
+        ribbon_rect = fitz.Rect(position.x, position.y, 
+                               position.x + position.width, 
+                               position.y + position.height)
         
-        BT
-        /{self.styling.font_name} {self.styling.font_size} Tf
-        {self.styling.text_color_rgb} rg
-        {rect.x0 + 10} {rect.y0 + (rect.height/2) - 4} Td
-        ({text}) Tj
-        ET
-        Q
-        """
+        # Determine ribbon color based on verification status
+        if self.verification_data.is_verified():
+            bg_color = self.styling.verified_color
+            text_color = self.styling.text_color
+            status_text = "🔒 VERIFIED - EduCerts"
+        else:
+            bg_color = self.styling.warning_color
+            text_color = self.styling.warning_text_color
+            status_text = "⚠️ UNVERIFIED - EduCerts"
         
-        # Set the appearance stream
-        annot.set_ap(ap_stream)
+        # Create background rectangle annotation
+        bg_annot = page.add_rect_annot(ribbon_rect)
+        bg_annot.set_colors(stroke=bg_color, fill=bg_color)
+        bg_annot.set_border(width=0)
+        bg_annot.update()
+        
+        # Add text annotation for ribbon content
+        text_rect = fitz.Rect(position.x + 10, position.y + 5,
+                             position.x + position.width - 10, 
+                             position.y + position.height - 5)
+        
+        text_annot = page.add_freetext_annot(text_rect, status_text)
+        text_annot.set_info(title="EduCerts Verification", content=status_text)
+        text_annot.set_text_color(text_color)
+        text_annot.set_font_size(self.styling.font_size)
+        text_annot.set_font("helv")
+        text_annot.set_border(width=0)
+        text_annot.update()
+        
+        # Make the ribbon clickable by adding a button widget
+        widget_rect = ribbon_rect
+        widget = page.add_widget(fitz.PDF_WIDGET_TYPE_BUTTON, widget_rect)
+        widget.field_name = "verification_ribbon"
+        widget.field_label = "Click for verification details"
+        widget.button_caption = ""  # No visible caption, just clickable area
+        widget.set_field_action("JavaScript", "showVerificationPopup();")
+        widget.update()
     
-    def _embed_verification_metadata(self, doc: fitz.Document, metadata: VerificationMetadata):
+    def _embed_verification_metadata(self, doc: fitz.Document):
         """
-        Embed verification metadata into PDF for offline access.
+        Embed verification metadata in PDF for offline access
         
         Args:
             doc: PDF document object
-            metadata: Verification metadata to embed
         """
-        # Convert metadata to JSON
-        metadata_json = json.dumps(asdict(metadata), indent=2)
+        # Convert verification data to JSON
+        metadata_json = json.dumps(asdict(self.verification_data), indent=2)
         
         # Store in PDF metadata
         current_metadata = doc.metadata
         current_metadata["verification_data"] = metadata_json
-        current_metadata["verification_ribbon"] = "true"
-        current_metadata["ribbon_version"] = "1.0"
+        current_metadata["verification_status"] = "verified" if self.verification_data.is_verified() else "unverified"
+        current_metadata["verification_timestamp"] = datetime.now().isoformat()
         
         doc.set_metadata(current_metadata)
     
-    def _add_interactive_javascript(self, doc: fitz.Document, ribbon_annotation: fitz.Annot):
+    def _add_interactive_javascript(self, doc: fitz.Document):
         """
-        Add JavaScript for interactive popup functionality.
+        Add JavaScript for interactive popup functionality
         
         Args:
             doc: PDF document object
-            ribbon_annotation: The ribbon annotation to make interactive
         """
+        # Get JavaScript template with verification data
+        js_templates = JavaScriptTemplates()
+        js_code = js_templates.generate_popup_javascript(self.verification_data)
+        
+        # Add JavaScript to PDF
         try:
-            # Generate JavaScript for popup functionality
-            popup_js = self.js_templates.generate_popup_javascript(self.verification_data)
-            
-            # Add JavaScript to the document
-            doc.add_javascript("ribbonPopup", popup_js)
-            
-            # Set the annotation action to trigger JavaScript
-            ribbon_annotation.set_action({
-                "type": "javascript",
-                "js": "showVerificationPopup();"
-            })
-            
-            print("✓ Added interactive JavaScript to ribbon")
-            
+            doc.add_javascript("verification_popup", js_code)
+            print("✓ Added interactive JavaScript to PDF")
         except Exception as e:
-            print(f"WARNING: Failed to add JavaScript interactivity: {e}")
+            print(f"WARNING: Could not add JavaScript: {e}")
             # Continue without JavaScript - ribbon will still be visible
-    
-    def create_verification_popup_html(self) -> str:
-        """
-        Generate HTML content for the verification popup.
-        
-        Returns:
-            str: HTML content for popup display
-        """
-        return self.js_templates.generate_popup_html(self.verification_data, self.styling)
-    
-    @staticmethod
-    def extract_verification_data(pdf_path: str) -> Optional[VerificationMetadata]:
-        """
-        Extract verification metadata from a PDF with embedded ribbon.
-        
-        Args:
-            pdf_path: Path to PDF file
-            
-        Returns:
-            VerificationMetadata or None if not found
-        """
-        try:
-            doc = fitz.open(pdf_path)
-            metadata = doc.metadata
-            
-            if "verification_data" in metadata:
-                verification_json = metadata["verification_data"]
-                verification_dict = json.loads(verification_json)
-                return VerificationMetadata(**verification_dict)
-            
-            return None
-            
-        except Exception as e:
-            print(f"ERROR: Failed to extract verification data: {e}")
-            return None
-    
-    @staticmethod
-    def has_verification_ribbon(pdf_path: str) -> bool:
-        """
-        Check if a PDF already has a verification ribbon.
-        
-        Args:
-            pdf_path: Path to PDF file
-            
-        Returns:
-            bool: True if ribbon exists, False otherwise
-        """
-        try:
-            doc = fitz.open(pdf_path)
-            metadata = doc.metadata
-            return metadata.get("verification_ribbon") == "true"
-        except:
-            return False
 
 
-def embed_ribbon_in_pdf(
-    pdf_path: str, 
-    output_path: str, 
-    verification_data: VerificationMetadata,
-    styling: Optional[RibbonStyle] = None
-) -> bool:
+def create_verification_ribbon(pdf_path: str, output_path: str, 
+                             verification_data: VerificationMetadata,
+                             styling: Optional[RibbonStyle] = None) -> bool:
     """
-    Convenience function to embed verification ribbon in PDF.
+    Convenience function to create and embed a verification ribbon
     
     Args:
-        pdf_path: Input PDF path
-        output_path: Output PDF path
+        pdf_path: Input PDF file path
+        output_path: Output PDF file path
         verification_data: Verification metadata
         styling: Optional custom styling
         
     Returns:
-        bool: Success status
+        bool: True if successful, False otherwise
     """
     ribbon = VerificationRibbon(verification_data, styling)
     return ribbon.embed_ribbon(pdf_path, output_path)
 
 
-def batch_embed_ribbons(
-    pdf_paths: list, 
-    output_dir: str,
-    verification_data_list: list,
-    styling: Optional[RibbonStyle] = None
-) -> Dict[str, bool]:
+def extract_verification_data(pdf_path: str) -> Optional[VerificationMetadata]:
     """
-    Embed verification ribbons in multiple PDFs.
+    Extract verification metadata from a PDF with embedded ribbon
     
     Args:
-        pdf_paths: List of input PDF paths
-        output_dir: Directory for output PDFs
-        verification_data_list: List of verification metadata
-        styling: Optional custom styling
+        pdf_path: Path to PDF file
         
     Returns:
-        Dict mapping PDF paths to success status
+        VerificationMetadata or None if not found
     """
-    results = {}
+    try:
+        doc = fitz.open(pdf_path)
+        metadata = doc.metadata
+        doc.close()
+        
+        if "verification_data" in metadata:
+            data_json = metadata["verification_data"]
+            data_dict = json.loads(data_json)
+            return VerificationMetadata(**data_dict)
+        
+        return None
+        
+    except Exception as e:
+        print(f"ERROR: Could not extract verification data: {e}")
+        return None
+
+
+def validate_ribbon_pdf(pdf_path: str) -> Dict[str, Any]:
+    """
+    Validate that a PDF has a properly embedded verification ribbon
     
-    for i, pdf_path in enumerate(pdf_paths):
-        try:
-            filename = os.path.basename(pdf_path)
-            output_path = os.path.join(output_dir, f"ribbon_{filename}")
+    Args:
+        pdf_path: Path to PDF file
+        
+    Returns:
+        dict: Validation results
+    """
+    results = {
+        "has_ribbon": False,
+        "has_metadata": False,
+        "has_javascript": False,
+        "is_valid": False,
+        "errors": []
+    }
+    
+    try:
+        doc = fitz.open(pdf_path)
+        
+        # Check for verification metadata
+        metadata = doc.metadata
+        if "verification_data" in metadata:
+            results["has_metadata"] = True
+        else:
+            results["errors"].append("No verification metadata found")
+        
+        # Check for ribbon annotations on first page
+        if len(doc) > 0:
+            page = doc[0]
+            annotations = page.annots()
             
-            verification_data = verification_data_list[i] if i < len(verification_data_list) else None
-            if not verification_data:
-                results[pdf_path] = False
-                continue
+            ribbon_found = False
+            for annot in annotations:
+                if annot.type[1] in ["FreeText", "Square", "Widget"]:
+                    ribbon_found = True
+                    break
             
-            success = embed_ribbon_in_pdf(pdf_path, output_path, verification_data, styling)
-            results[pdf_path] = success
-            
-        except Exception as e:
-            print(f"ERROR: Failed to process {pdf_path}: {e}")
-            results[pdf_path] = False
+            results["has_ribbon"] = ribbon_found
+            if not ribbon_found:
+                results["errors"].append("No ribbon annotations found")
+        
+        # Check for JavaScript
+        js_names = doc.get_javascript()
+        if js_names and "verification_popup" in str(js_names):
+            results["has_javascript"] = True
+        else:
+            results["errors"].append("No interactive JavaScript found")
+        
+        doc.close()
+        
+        # Overall validation
+        results["is_valid"] = (results["has_ribbon"] and 
+                              results["has_metadata"] and 
+                              len(results["errors"]) == 0)
+        
+    except Exception as e:
+        results["errors"].append(f"PDF validation error: {e}")
     
     return results
+
+
+if __name__ == "__main__":
+    # Test the ribbon system
+    from verification_metadata import create_test_verification_data
+    
+    test_data = create_test_verification_data()
+    
+    # Test ribbon creation
+    success = create_verification_ribbon(
+        "test_input.pdf",
+        "test_output_with_ribbon.pdf", 
+        test_data
+    )
+    
+    if success:
+        print("✓ Test ribbon creation successful")
+        
+        # Validate the result
+        validation = validate_ribbon_pdf("test_output_with_ribbon.pdf")
+        print(f"Validation results: {validation}")
+    else:
+        print("✗ Test ribbon creation failed")

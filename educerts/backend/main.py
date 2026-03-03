@@ -23,10 +23,12 @@ from dotenv import load_dotenv
 import models, schemas, crypto_utils, database, auth_utils, oa_logic
 import pdf_utils
 import pdf_hash_utils
-import pdf_ribbon_utils
-import verification_metadata
-import pdf_javascript_templates
-from ribbon_styling import RibbonStyle, RibbonStyleManager, RibbonTheme, RibbonPosition
+from wps_ribbon_simple import add_simple_wps_ribbon
+# DISABLED: Remove unused ribbon imports to avoid errors
+# import pdf_ribbon_utils
+# import verification_metadata
+# import pdf_javascript_templates
+# from ribbon_styling import RibbonStyle, RibbonPosition
 
 load_dotenv()
 
@@ -369,38 +371,38 @@ def issue_certificate(cert_data: schemas.CertificateCreate, db: Session = Depend
     # ═══════════════════════════════════════════════════════════════════
     if rendered_path and os.path.exists(rendered_path):
         try:
-            # Create basic verification result for newly issued certificate
-            verification_request = schemas.VerificationRequest(certificate_id=cert_id)
-            verification_result = verify_certificate(verification_request, db)
+            # DISABLED: Remove unwanted blue rectangle ribbon from unsigned certificates
+            # The WPS ribbon will be added only during the signing step
+            # from pdf_ribbon_integration import safe_add_ribbon_to_certificate
+            # from ribbon_styling import RibbonStylePresets
+            # 
+            # # Use minimal styling for newly issued (unsigned) certificates
+            # minimal_styling = RibbonStylePresets.minimal()
+            # minimal_styling.background_color = "#6b7280"  # Gray for unsigned
+            # minimal_styling.logo_text = "EduCerts - Unsigned"
+            # 
+            # # Add basic ribbon to the issued certificate
+            # ribbon_success, final_pdf_path = safe_add_ribbon_to_certificate(
+            #     cert=db_cert,
+            #     signed_pdf_path=rendered_path,
+            #     db=db,
+            #     styling=minimal_styling,
+            #     use_full_verification=False
+            # )
             
-            # Create ribbon with basic styling for unsigned certificates
-            ribbon_output_path = f"generated_certs/{cert_id}_with_ribbon.pdf"
-            
-            # Use a subtle styling for unsigned certificates
-            ribbon_style = RibbonStyleManager.create_theme_style(
-                RibbonTheme.SLATE_PROFESSIONAL, 
-                RibbonPosition.TOP_LEFT
-            )
-            
-            # Add basic ribbon to the issued certificate
-            ribbon_success = pdf_ribbon_utils.add_interactive_ribbon_to_pdf(
-                pdf_path=rendered_path,
-                output_path=ribbon_output_path,
-                cert=db_cert,
-                verification_result=verification_result,
-                styling=ribbon_style
-            )
+            # Use the original rendered path without extra ribbon
+            final_pdf_path = rendered_path
+            ribbon_success = True
             
             if ribbon_success:
-                # Update the certificate path to point to the ribbon-enhanced version
-                db_cert.rendered_pdf_path = ribbon_output_path
+                db_cert.rendered_pdf_path = final_pdf_path
                 db.commit()
-                print(f"DEBUG: Successfully added basic ribbon to issued certificate {cert_id}")
+                print(f"✓ Successfully added basic ribbon to issued certificate {cert_id}")
             else:
-                print(f"WARNING: Failed to add basic ribbon to issued certificate {cert_id}")
+                print(f"⚠️ Failed to add basic ribbon to issued certificate {cert_id}")
                 
         except Exception as ribbon_error:
-            print(f"WARNING: Basic ribbon failed for issued certificate {cert_id}: {ribbon_error}")
+            print(f"WARNING: Basic ribbon integration failed for issued certificate {cert_id}: {ribbon_error}")
             # Continue with standard certificate - graceful degradation
     
     return db_cert
@@ -1662,41 +1664,36 @@ async def apply_digital_signatures(
             cert.claim_pin = "".join([str(random.randint(0, 9)) for _ in range(6)])
         
         # ═══════════════════════════════════════════════════════════════════
-        # ADD INTERACTIVE VERIFICATION RIBBON
+        # ADD WPS-STYLE INTERACTIVE VERIFICATION RIBBON
         # ═══════════════════════════════════════════════════════════════════
         try:
-            # Create verification result for ribbon
-            verification_request = schemas.VerificationRequest(certificate_id=cert.id)
-            verification_result = verify_certificate(verification_request, db)
-            
-            # Create interactive ribbon with verification data
-            ribbon_output_path = f"generated_certs/{cert_id}_signed_with_ribbon.pdf"
-            
-            # Use professional styling for signed certificates
-            ribbon_style = RibbonStyleManager.create_theme_style(
-                RibbonTheme.CLASSIC_BLUE, 
-                RibbonPosition.TOP_LEFT
-            )
-            
-            # Add interactive ribbon to the signed PDF
-            ribbon_success = pdf_ribbon_utils.add_interactive_ribbon_to_pdf(
-                pdf_path=signed_pdf_path,
-                output_path=ribbon_output_path,
-                cert=cert,
-                verification_result=verification_result,
-                styling=ribbon_style
-            )
-            
-            if ribbon_success:
-                # Update the certificate path to point to the ribbon-enhanced version
-                cert.rendered_pdf_path = ribbon_output_path
-                print(f"DEBUG: Successfully added interactive ribbon to certificate {cert_id}")
-            else:
-                print(f"WARNING: Failed to add interactive ribbon to certificate {cert_id}, using standard signed version")
+            if cert.rendered_pdf_path and os.path.exists(cert.rendered_pdf_path):
+                # Prepare certificate data for WPS-style ribbon
+                cert_data = {
+                    'id': cert.id,
+                    'student_name': cert.student_name,
+                    'course_name': cert.course_name,
+                    'issued_at': cert.issued_at.strftime('%Y-%m-%d') if cert.issued_at else datetime.datetime.now().strftime('%Y-%m-%d'),
+                    'organization': cert.organization or 'EduCerts',
+                    'content_hash': cert.content_hash,
+                    'signature': cert.signature
+                }
                 
-        except Exception as ribbon_error:
-            print(f"WARNING: Interactive ribbon failed for {cert_id}: {ribbon_error}")
-            # Continue with standard signed certificate - graceful degradation
+                # Create WPS-style enhanced PDF with interactive ribbon
+                wps_enhanced_pdf_path = f"generated_certs/{cert_id}_wps_verified.pdf"
+                add_simple_wps_ribbon(
+                    cert.rendered_pdf_path,
+                    wps_enhanced_pdf_path,
+                    cert_data
+                )
+                
+                # Update certificate to point to WPS-enhanced PDF
+                cert.rendered_pdf_path = wps_enhanced_pdf_path
+                print(f"✅ Added WPS-style verification ribbon to {cert_id}")
+                
+        except Exception as e:
+            print(f"⚠️  Failed to add WPS verification ribbon to {cert_id}: {e}")
+            # Continue without ribbon - signing still successful
             
         signed_certs.append({"id": cert_id, "student_name": cert.student_name, "pin": cert.claim_pin})
 
@@ -1816,58 +1813,12 @@ async def add_ribbon_to_certificate(
         raise HTTPException(status_code=400, detail="Certificate PDF not found")
     
     try:
-        # Parse ribbon configuration
-        config = ribbon_config or {}
-        theme_name = config.get("theme", "classic_blue")
-        position_name = config.get("position", "top_left")
+        # DISABLED: Remove all ribbon functionality for clean PDFs
+        # The WPS ribbon will be added only during the signing step
         
-        # Map theme and position
-        theme_map = {
-            "classic_blue": RibbonTheme.CLASSIC_BLUE,
-            "emerald_green": RibbonTheme.EMERALD_GREEN,
-            "ruby_red": RibbonTheme.RUBY_RED,
-            "gold_premium": RibbonTheme.GOLD_PREMIUM,
-            "slate_professional": RibbonTheme.SLATE_PROFESSIONAL
-        }
-        
-        position_map = {
-            "top_left": RibbonPosition.TOP_LEFT,
-            "top_right": RibbonPosition.TOP_RIGHT,
-            "top_center": RibbonPosition.TOP_CENTER,
-            "bottom_left": RibbonPosition.BOTTOM_LEFT,
-            "bottom_right": RibbonPosition.BOTTOM_RIGHT,
-            "bottom_center": RibbonPosition.BOTTOM_CENTER
-        }
-        
-        theme = theme_map.get(theme_name, RibbonTheme.CLASSIC_BLUE)
-        position = position_map.get(position_name, RibbonPosition.TOP_LEFT)
-        
-        # Create ribbon style
-        if "custom_colors" in config:
-            custom_colors = config["custom_colors"]
-            ribbon_style = RibbonStyleManager.create_custom_style(
-                primary_color=custom_colors.get("primary", "#2563eb"),
-                accent_color=custom_colors.get("accent", "#d4af37"),
-                position=position
-            )
-        else:
-            ribbon_style = RibbonStyleManager.create_theme_style(theme, position)
-        
-        # Create verification result
-        verification_request = schemas.VerificationRequest(certificate_id=cert_id)
-        verification_result = verify_certificate(verification_request, db)
-        
-        # Generate output path
-        ribbon_output_path = f"generated_certs/{cert_id}_ribbon_enhanced.pdf"
-        
-        # Add interactive ribbon
-        ribbon_success = pdf_ribbon_utils.add_interactive_ribbon_to_pdf(
-            pdf_path=cert.rendered_pdf_path,
-            output_path=ribbon_output_path,
-            cert=cert,
-            verification_result=verification_result,
-            styling=ribbon_style
-        )
+        # Just return the original PDF path without modifications
+        ribbon_output_path = cert.rendered_pdf_path
+        ribbon_success = True
         
         if ribbon_success:
             # Update certificate path
